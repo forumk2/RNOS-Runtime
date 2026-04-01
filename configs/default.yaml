@@ -1,0 +1,10 @@
+runtime:
+  max_steps: 3
+  degrade_entropy: 4.5
+  refuse_entropy: 7.0
+  minimum_trust: 0.2
+
+planner:
+  use_lm_studio: false
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  model: "local-model"
