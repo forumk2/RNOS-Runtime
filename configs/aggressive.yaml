@@ -1,8 +1,11 @@
 runtime:
   max_steps: 5
-  degrade_entropy: 3.5
+
+policy:
   refuse_entropy: 6.0
-  minimum_trust: 0.3
+  refuse_trust: 0.3
+  degrade_entropy: 3.5
+  degrade_trust: 0.5
 
 planner:
   use_lm_studio: false

@@ -25,6 +25,8 @@ class ActionRecord:
     retry_count: int = 0
     success: bool | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    latency_ms: float | None = None
+    cumulative_calls: int = 0
 
 
 @dataclass(slots=True)

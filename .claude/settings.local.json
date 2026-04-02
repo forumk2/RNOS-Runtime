@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/run_agent.py --max-steps 10 --seed 4 --dry-run)",
+      "Bash(python scripts/run_agent.py --max-steps 10 --seed 4 --dry-run --no-rnos)",
+      "Bash(python -c ':*)",
+      "Bash(python scripts/run_agent.py --max-steps 10 --seed 4 --dry-run --persona cautious)",
+      "Bash(python scripts/run_agent.py --max-steps 10 --seed 4 --dry-run --config configs/aggressive.yaml)",
+      "Bash(python -c \"import json; lines=open\\('logs/rnos_trace.jsonl'\\).read\\(\\).strip\\(\\).splitlines\\(\\); print\\(f'events={len\\(lines\\)} stages={[json.loads\\(l\\)[\\\\\"stage\\\\\"] for l in lines]}'\\)\")"
+    ]
+  }
+}
