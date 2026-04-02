@@ -145,8 +145,7 @@ env.bak/
 venv.bak/
 
 # Agents
-.claude
-
+.claude/
 # Spyder project settings
 .spyderproject
 .spyproject
