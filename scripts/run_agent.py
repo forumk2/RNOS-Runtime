@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import random
 import sys
@@ -17,12 +18,16 @@ import yaml
 from agent.parser import parse_action
 from agent.planner import Planner, PersonaName
 from baselines.circuit_breaker import CircuitBreaker
+from rnos.coherence import compute_runtime_coherence, format_runtime_coherence_report
+from rnos.logger import write_trace
 from rnos.policy import PolicyConfig
 from rnos.runtime import RNOSRuntime
 from rnos.types import PolicyDecision
 from tools.unstable_api import UnstableAPI, UnstableAPITool
 
 TRACE_PATH = Path(__file__).resolve().parents[1] / "logs" / "rnos_trace.jsonl"
+RESULTS_PATH = Path(__file__).resolve().parents[1] / "results" / "runs.jsonl"
+_VALID_PHASES = {"stable", "unstable", "collapse"}
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +68,54 @@ def _load_policy_config(config_path: Path) -> PolicyConfig:
     )
 
 
+def _resolve_phase(
+    observed_phase: str | None,
+    *,
+    last_phase: str,
+) -> tuple[str, str]:
+    """Return ``(phase, source)`` for the step trace."""
+    if observed_phase in _VALID_PHASES:
+        return observed_phase, "observed"
+    return last_phase, "carried_forward"
+
+
+def _append_execution_step(
+    step_trace: list[dict[str, object]],
+    *,
+    trace_path: Path,
+    step: int,
+    tool: str,
+    phase: str,
+    phase_source: str,
+    decision: str,
+    decision_raw: str,
+    tool_result: str,
+    tool_result_raw: str,
+    consecutive_failures: int,
+    cooldown_remaining: int,
+    planner_latency_ms: float,
+    planner_emitted_tool_call: bool,
+) -> None:
+    """Append a canonical execution-step record and mirror it to JSONL."""
+    record = {
+        "stage": "execution_step",
+        "step": step,
+        "tool": tool,
+        "phase": phase,
+        "phase_source": phase_source,
+        "decision": decision,
+        "decision_raw": decision_raw,
+        "tool_result": tool_result,
+        "tool_result_raw": tool_result_raw,
+        "consecutive_failures": consecutive_failures,
+        "cooldown_remaining": cooldown_remaining,
+        "planner_latency_ms": planner_latency_ms,
+        "planner_emitted_tool_call": planner_emitted_tool_call,
+    }
+    step_trace.append(record)
+    write_trace(record, path=trace_path)
+
+
 # ---------------------------------------------------------------------------
 # Core loop
 # ---------------------------------------------------------------------------
@@ -81,6 +134,7 @@ def run_agent(
     dry_run: bool = False,
     persona: PersonaName = "adversarial",
     config_path: Path | None = None,
+    tag: str = "",
 ) -> dict[str, object]:
     """Execute an RNOS-controlled, circuit-breaker-controlled, or bypassed tool loop.
 
@@ -98,8 +152,10 @@ def run_agent(
         dry_run: Replace :class:`Planner` with a stub; no LM Studio required.
         persona: System-prompt persona forwarded to :class:`Planner`.
         config_path: Optional path to a YAML file with ``policy`` thresholds.
+        tag: Free-text label stored in the summary for later filtering.
     """
 
+    t_run_start = time.monotonic()
     random.seed(seed)
 
     # --- planner selection ---------------------------------------------------
@@ -139,17 +195,30 @@ def run_agent(
     steps_executed = 0
     final_entropy = 0.0
     final_trust = 0.0
+    last_step = 0
+    last_phase = "stable"
+    step_trace: list[dict[str, object]] = []
 
-    # Degrade budget (RNOS mode only):
+    # Latency accumulators
+    planner_latency_total_ms = 0.0
+    tool_latency_total_ms = 0.0
+
+    # Intervention tracking (first non-ALLOW / non-CLOSED event)
+    first_intervention_step: int | None = None
+    first_intervention_type: str | None = None
+
+    # Stop reason (set when loop breaks before max_steps)
+    stop_reason = "completed"
+
+    # Degrade budget (RNOS mode only).
     # Invariant — degrade_remaining is decremented immediately after each
-    # degraded tool execution.  A value of 0 means the budget is exhausted;
-    # this is detected in the DEGRADE branch before the NEXT tool is allowed
-    # to run.  None means we are not currently in a degrade window.
+    # degraded tool execution. A value of 0 means budget exhausted; detected
+    # before the NEXT tool is allowed to run. None = not in a degrade window.
     degrade_remaining: int | None = None
 
     # --- header --------------------------------------------------------------
     if dry_run:
-        print("[DRY RUN] LM Studio not called — planner returns 'CALL unstable_api' always")
+        print("[DRY RUN] LM Studio not called -- planner returns 'CALL unstable_api' always")
     print("=== LM Studio RNOS Loop ===")
     if circuit_breaker:
         mode_label = "circuit_breaker"
@@ -166,11 +235,13 @@ def run_agent(
 
     # =========================================================================
     for step in range(1, max_steps + 1):
+        last_step = step
 
         # --- planner call (measure wall-clock time for latency signal) -------
         t0 = time.monotonic()
         llm_output = planner.get_next_action(history)
         planner_latency_ms = (time.monotonic() - t0) * 1000.0
+        planner_latency_total_ms += planner_latency_ms
 
         # --- build action record ---------------------------------------------
         action = parse_action(llm_output)
@@ -184,10 +255,11 @@ def run_agent(
         # --- control decision ------------------------------------------------
         executed_in_degrade = False  # RNOS only
         cb_reason: str = "closed"   # circuit breaker only; set below
+        assessment = None           # RNOS only; avoids NameError in history append
 
         if circuit_breaker:
             # -----------------------------------------------------------------
-            # Circuit breaker path — no RNOS calls
+            # Circuit breaker path -- no RNOS calls
             # -----------------------------------------------------------------
             assert cb is not None
             cb.tick()
@@ -195,6 +267,9 @@ def run_agent(
 
             if not allowed:
                 cb_stats = cb.stats
+                if first_intervention_step is None:
+                    first_intervention_step = step
+                    first_intervention_type = "blocked"
                 decision_str = (
                     "BREAKER_STOPPED" if cb_reason == "permanently_open"
                     else "BREAKER_BLOCKED"
@@ -209,6 +284,23 @@ def run_agent(
                     f"consecutive_failures={cb_stats['consecutive_failures']} "
                     f"total_blocked={cb_stats['total_blocked']}"
                 )
+                phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+                _append_execution_step(
+                    step_trace,
+                    trace_path=TRACE_PATH,
+                    step=step,
+                    tool=action.tool_name,
+                    phase=phase,
+                    phase_source=phase_source,
+                    decision="STOPPED" if cb_reason == "permanently_open" else "BLOCKED",
+                    decision_raw=decision_str,
+                    tool_result="BLOCKED",
+                    tool_result_raw="BLOCKED",
+                    consecutive_failures=int(cb_stats["consecutive_failures"]),
+                    cooldown_remaining=int(cb_stats["cooldown_remaining"]),
+                    planner_latency_ms=planner_latency_ms,
+                    planner_emitted_tool_call=bool(action.tool_name),
+                )
                 total_blocked_steps += 1
                 history.append(
                     {
@@ -219,10 +311,15 @@ def run_agent(
                     }
                 )
                 if cb_reason == "permanently_open":
+                    stop_reason = "permanently_open"
                     break
                 continue
 
-            # Allowed — print step header now (tool result printed below)
+            # Allowed -- track first HALF_OPEN and print step header
+            if cb_reason == "half_open_probe" and first_intervention_step is None:
+                first_intervention_step = step
+                first_intervention_type = "half_open"
+
             decision_str = (
                 "BREAKER_HALF_OPEN" if cb_reason == "half_open_probe"
                 else "BREAKER_CLOSED"
@@ -253,22 +350,60 @@ def run_agent(
             )
 
             if assessment.decision is PolicyDecision.REFUSE:
+                if first_intervention_step is None:
+                    first_intervention_step = step
+                    first_intervention_type = "refuse"
+                stop_reason = "refused"
                 refused = True
+                phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+                _append_execution_step(
+                    step_trace,
+                    trace_path=TRACE_PATH,
+                    step=step,
+                    tool=action.tool_name,
+                    phase=phase,
+                    phase_source=phase_source,
+                    decision="STOPPED",
+                    decision_raw=assessment.decision.value.upper(),
+                    tool_result="BLOCKED",
+                    tool_result_raw="BLOCKED",
+                    consecutive_failures=retry_count,
+                    cooldown_remaining=0,
+                    planner_latency_ms=planner_latency_ms,
+                    planner_emitted_tool_call=bool(action.tool_name),
+                )
                 print("           stop=RNOS refused execution")
                 break
 
             if assessment.decision is PolicyDecision.DEGRADE:
+                if first_intervention_step is None:
+                    first_intervention_step = step
+                    first_intervention_type = "degrade"
                 if degrade_remaining is None:
-                    # First entry into degrade mode: initialise budget from constraints.
                     degrade_remaining = int(
                         assessment.constraints.get("max_additional_steps", 1)
                     )
                 elif degrade_remaining == 0:
-                    # Budget exhausted from the previous degraded step.
-                    # Stop before executing again.
+                    stop_reason = "degrade_exhausted"
+                    phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+                    _append_execution_step(
+                        step_trace,
+                        trace_path=TRACE_PATH,
+                        step=step,
+                        tool=action.tool_name,
+                        phase=phase,
+                        phase_source=phase_source,
+                        decision="STOPPED",
+                        decision_raw="DEGRADE_EXHAUSTED",
+                        tool_result="BLOCKED",
+                        tool_result_raw="BLOCKED",
+                        consecutive_failures=retry_count,
+                        cooldown_remaining=0,
+                        planner_latency_ms=planner_latency_ms,
+                        planner_emitted_tool_call=bool(action.tool_name),
+                    )
                     print("           stop=DEGRADE budget exhausted")
                     break
-                # else: degrade_remaining > 0, continue in degrade window
                 executed_in_degrade = True
                 action.payload["_rnos_constraints"] = assessment.constraints
                 print(
@@ -276,7 +411,6 @@ def run_agent(
                     f"constraints={json.dumps(assessment.constraints, sort_keys=True)}"
                 )
             elif assessment.decision is PolicyDecision.ALLOW:
-                # Trust recovered: clear the degrade budget so re-entry initialises fresh.
                 degrade_remaining = None
 
         # --- unknown-tool guard ----------------------------------------------
@@ -286,6 +420,32 @@ def run_agent(
                 rnos.record_outcome(action, success=False)
             total_failures += 1
             steps_executed += 1
+            phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+            if circuit_breaker:
+                assert cb is not None
+                consecutive_failures = int(cb.stats["consecutive_failures"])
+                cooldown_remaining = int(cb.stats["cooldown_remaining"])
+                decision_raw = decision_str
+            else:
+                consecutive_failures = retry_count + 1
+                cooldown_remaining = 0
+                decision_raw = "BYPASS" if no_rnos else assessment.decision.value.upper()
+            _append_execution_step(
+                step_trace,
+                trace_path=TRACE_PATH,
+                step=step,
+                tool=action.tool_name,
+                phase=phase,
+                phase_source=phase_source,
+                decision="EXECUTE",
+                decision_raw=decision_raw,
+                tool_result="FAILURE",
+                tool_result_raw="UNKNOWN_TOOL",
+                consecutive_failures=consecutive_failures,
+                cooldown_remaining=cooldown_remaining,
+                planner_latency_ms=planner_latency_ms,
+                planner_emitted_tool_call=bool(action.tool_name),
+            )
             history.append(
                 {
                     "step": step,
@@ -294,12 +454,14 @@ def run_agent(
                     "result": "unknown_tool",
                 }
             )
+            stop_reason = "unknown_tool"
             break
 
         # --- tool execution --------------------------------------------------
         tool_t0 = time.monotonic()
         result = tool.run(**action.payload)
         tool_latency_ms = (time.monotonic() - tool_t0) * 1000.0
+        tool_latency_total_ms += tool_latency_ms
         steps_executed += 1
 
         if circuit_breaker:
@@ -324,7 +486,10 @@ def run_agent(
             f"failure_streak={result.result_data.get('failure_streak')}"
         )
         print(f"           result_data={json.dumps(result.result_data, sort_keys=True)}")
-        print(f"           planner_latency_ms={planner_latency_ms:.1f} tool_latency_ms={tool_latency_ms:.1f}")
+        print(
+            f"           planner_latency_ms={planner_latency_ms:.1f} "
+            f"tool_latency_ms={tool_latency_ms:.1f}"
+        )
 
         if circuit_breaker:
             assert cb is not None
@@ -335,9 +500,34 @@ def run_agent(
                 f"consecutive_failures={cb_stats['consecutive_failures']} "
                 f"total_blocked={cb_stats['total_blocked']}"
             )
+            consecutive_failures = int(cb_stats["consecutive_failures"])
+            cooldown_remaining = int(cb_stats["cooldown_remaining"])
+            decision_raw = decision_str
+        else:
+            consecutive_failures = 0 if result.success else retry_count + 1
+            cooldown_remaining = 0
+            decision_raw = "BYPASS" if no_rnos else assessment.decision.value.upper()
 
-        # Immediately consume one degrade credit after a degraded step executes
-        # (RNOS only).
+        observed_phase = result.result_data.get("phase")
+        phase, phase_source = _resolve_phase(observed_phase, last_phase=last_phase)
+        last_phase = phase
+        _append_execution_step(
+            step_trace,
+            trace_path=TRACE_PATH,
+            step=step,
+            tool=action.tool_name,
+            phase=phase,
+            phase_source=phase_source,
+            decision="EXECUTE",
+            decision_raw=decision_raw,
+            tool_result="SUCCESS" if result.success else "FAILURE",
+            tool_result_raw="SUCCESS" if result.success else "FAILURE",
+            consecutive_failures=consecutive_failures,
+            cooldown_remaining=cooldown_remaining,
+            planner_latency_ms=planner_latency_ms,
+            planner_emitted_tool_call=bool(action.tool_name),
+        )
+
         if executed_in_degrade and degrade_remaining is not None:
             degrade_remaining -= 1
             print(f"           remaining_degraded_retries={degrade_remaining}")
@@ -361,53 +551,92 @@ def run_agent(
 
     # =========================================================================
 
+    duration_seconds = time.monotonic() - t_run_start
+
     # --- summary -------------------------------------------------------------
     if no_rnos:
         print("\n[BASELINE] RNOS was disabled for this run.")
+
+    coherence_report = compute_runtime_coherence(step_trace)
 
     if circuit_breaker:
         assert cb is not None
         summary: dict[str, object] = {
             "mode": "circuit_breaker",
+            "total_loop_steps": last_step,
             "total_steps_executed": steps_executed,
             "total_tool_failures": total_failures,
             "total_blocked_steps": total_blocked_steps,
             "max_cooldown_reached": max_cooldown_reached,
             "final_breaker_state": cb.state,
+            "final_state": stop_reason,
+            "first_intervention_step": first_intervention_step,
+            "first_intervention_type": first_intervention_type,
+            "duration_seconds": round(duration_seconds, 3),
+            "planner_latency_total_ms": round(planner_latency_total_ms, 1),
+            "tool_latency_total_ms": round(tool_latency_total_ms, 1),
             "seed": seed,
             "max_steps": max_steps,
             "cb_threshold": cb_threshold,
             "cb_cooldown": cb_cooldown,
             "cb_max_cooldown": cb_max_cooldown,
             "cb_max_blocked": cb_max_blocked,
+            "execution_trace": step_trace,
+            "runtime_coherence": coherence_report,
         }
 
         print("\nSummary")
         print(f"  mode={summary['mode']}")
+        print(f"  total_loop_steps={last_step}")
         print(f"  total_steps_executed={steps_executed}")
         print(f"  total_tool_failures={total_failures}")
         print(f"  total_blocked_steps={total_blocked_steps}")
         print(f"  max_cooldown_reached={max_cooldown_reached}")
         print(f"  final_breaker_state={cb.state}")
+        print(f"  final_state={stop_reason}")
+        print(f"  first_intervention_step={first_intervention_step}")
+        print(f"  first_intervention_type={first_intervention_type}")
+        print(f"  duration_seconds={duration_seconds:.3f}")
+        print(f"  planner_latency_total_ms={planner_latency_total_ms:.1f}")
+        print(f"  tool_latency_total_ms={tool_latency_total_ms:.1f}")
     else:
         summary = {
             "mode": "baseline" if no_rnos else "rnos",
+            "total_loop_steps": last_step,
             "total_steps_executed": steps_executed,
             "total_tool_failures": total_failures,
             "refused": refused,
             "final_entropy": final_entropy,
             "final_trust": final_trust,
+            "final_state": stop_reason,
+            "first_intervention_step": first_intervention_step,
+            "first_intervention_type": first_intervention_type,
+            "duration_seconds": round(duration_seconds, 3),
+            "planner_latency_total_ms": round(planner_latency_total_ms, 1),
+            "tool_latency_total_ms": round(tool_latency_total_ms, 1),
             "seed": seed,
             "max_steps": max_steps,
+            "execution_trace": step_trace,
+            "runtime_coherence": coherence_report,
         }
 
         print("\nSummary")
         print(f"  mode={summary['mode']}")
+        print(f"  total_loop_steps={last_step}")
         print(f"  total_steps_executed={steps_executed}")
         print(f"  total_tool_failures={total_failures}")
         print(f"  refused={refused}")
         print(f"  final_entropy={final_entropy:.3f}")
         print(f"  final_trust={final_trust:.3f}")
+        print(f"  final_state={stop_reason}")
+        print(f"  first_intervention_step={first_intervention_step}")
+        print(f"  first_intervention_type={first_intervention_type}")
+        print(f"  duration_seconds={duration_seconds:.3f}")
+        print(f"  planner_latency_total_ms={planner_latency_total_ms:.1f}")
+        print(f"  tool_latency_total_ms={tool_latency_total_ms:.1f}")
+
+    print("\nRuntime Coherence Metrics v0.1")
+    print(format_runtime_coherence_report(coherence_report))
 
     return summary
 
@@ -474,6 +703,13 @@ def main() -> None:
         metavar="YAML",
         help="Path to a YAML file with 'policy' threshold overrides.",
     )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        metavar="TEXT",
+        help="Free-text label stored with the run for later filtering.",
+    )
     args = parser.parse_args()
 
     if args.circuit_breaker and args.no_rnos:
@@ -491,14 +727,29 @@ def main() -> None:
         cb_threshold=args.cb_threshold,
         cb_cooldown=args.cb_cooldown,
         cb_max_cooldown=args.cb_max_cooldown,
+        cb_max_blocked=10,
         dry_run=args.dry_run,
         persona=args.persona,
         config_path=args.config,
+        tag=args.tag,
     )
 
     print("\n=== Summary JSON ===")
     print(json.dumps(summary, indent=2))
+
+    # --- append run record to results/runs.jsonl ----------------------------
+    summary["timestamp"] = datetime.datetime.now(datetime.UTC).isoformat()
+    summary["persona"] = args.persona
+    summary["config"] = str(args.config) if args.config else None
+    summary["dry_run"] = args.dry_run
+    summary["tag"] = args.tag
+
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with RESULTS_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(summary) + "\n")
+
     print(f"Trace log written to {TRACE_PATH}")
+    print(f"Results appended to {RESULTS_PATH}")
 
 
 if __name__ == "__main__":
