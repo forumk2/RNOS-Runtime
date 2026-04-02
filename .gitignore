@@ -203,6 +203,7 @@ cython_debug/
 
 # RNOS runtime outputs
 logs/
+results/
 
 # Marimo
 marimo/_static/

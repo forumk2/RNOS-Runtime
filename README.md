@@ -189,6 +189,30 @@ It is about making systems:
 
 ---
 
+## Running Comparisons
+
+Run all three modes (RNOS, circuit breaker, baseline) in sequence and generate a report:
+
+    python scripts/run_comparison.py --max-steps 20 --seed 4 --tag "my-test"
+
+Or with a live LM Studio model:
+
+    python scripts/run_comparison.py --max-steps 20 --seed 4 --tag "live-qwen3-4b"
+
+Add `--dry-run` to skip LM Studio entirely (useful for quick verification):
+
+    python scripts/run_comparison.py --max-steps 20 --seed 4 --dry-run --tag "verify"
+
+Results are saved to `results/runs.jsonl`. Reports and charts are generated in `results/`.
+
+To regenerate a report from existing data without re-running:
+
+    python scripts/generate_report.py --tag "my-test"
+    python scripts/generate_report.py --seed 4
+    python scripts/generate_report.py --no-chart   # skip PNG generation
+
+---
+
 ## 🛠️ Current State
 
 This repository contains:

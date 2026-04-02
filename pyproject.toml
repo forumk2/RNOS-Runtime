@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "forumk2" }]
-dependencies = ["PyYAML>=6.0", "openai>=1.40.0"]
+dependencies = ["PyYAML>=6.0", "openai>=1.40.0", "matplotlib>=3.8"]
 
 [tool.setuptools.packages.find]
 include = ["rnos*", "agent*", "tools*", "integrations*", "experiments*"]
