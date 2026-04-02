@@ -2,31 +2,19 @@
 
 from __future__ import annotations
 
-import json
-
 from rnos.types import ActionRecord
 
 
-def parse_action(raw_text: str, *, depth: int = 0, retry_count: int = 0) -> ActionRecord:
-    """Parse a JSON tool request or fall back to a calculator action."""
+def parse_action(output: str) -> ActionRecord:
+    """Parse a planner completion into an action record."""
 
-    text = raw_text.strip()
-    try:
-        data = json.loads(text)
-        tool_name = data["tool"]
-        payload = data.get("payload", {})
+    if "CALL unstable_api" in output:
         return ActionRecord(
-            tool_name=tool_name,
-            payload=payload,
-            depth=depth,
-            retry_count=retry_count,
-            metadata={"raw_text": raw_text},
+            tool_name="unstable_api",
+            metadata={"raw_text": output.strip()},
         )
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return ActionRecord(
-            tool_name="calculator",
-            payload={"expression": text},
-            depth=depth,
-            retry_count=retry_count,
-            metadata={"raw_text": raw_text, "parser_mode": "fallback"},
-        )
+
+    return ActionRecord(
+        tool_name="unknown",
+        metadata={"raw_text": output.strip(), "parser_mode": "unknown"},
+    )

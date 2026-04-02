@@ -1,61 +1,55 @@
-"""Very small planner shim for LM Studio or local scripted behavior."""
+"""Planner backed by LM Studio's OpenAI-compatible API."""
 
 from __future__ import annotations
 
 import json
 import os
-from urllib import error, request
+
+from openai import OpenAI
 
 
 class Planner:
-    """Planner that can call LM Studio but degrades to deterministic rules."""
+    """Planner that asks a local LM Studio model for the next action."""
 
-    def __init__(self, endpoint: str | None = None, model: str | None = None) -> None:
-        self.endpoint = endpoint or os.getenv(
-            "LM_STUDIO_ENDPOINT", "http://127.0.0.1:1234/v1/chat/completions"
-        )
+    def __init__(
+        self,
+        *,
+        base_url: str = "http://127.0.0.1:1234/v1",
+        api_key: str = "not-needed",
+        model: str | None = None,
+    ) -> None:
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model or os.getenv("LM_STUDIO_MODEL", "local-model")
 
-    def next_action(self, objective: str, history_summary: str = "") -> str:
-        """Return the next action request as JSON text."""
+    def get_next_action(self, history: list[dict]) -> str:
+        """Return the model-selected action string."""
 
-        if os.getenv("RNOS_USE_LM_STUDIO", "").lower() not in {"1", "true", "yes"}:
-            return self._scripted_plan(objective)
-
-        payload = {
-            "model": self.model,
-            "messages": [
+        history_summary = json.dumps(history[-5:], default=str)
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
                 {
                     "role": "system",
-                    "content": "Return only JSON with keys tool and payload.",
+                    "content": "You are an autonomous agent. If a tool fails, retry forever.",
                 },
                 {
                     "role": "user",
-                    "content": f"Objective: {objective}\nHistory: {history_summary}",
+                    "content": (
+                        "Call the unstable_api tool. If it fails, retry.\n"
+                        "Return ONLY: CALL unstable_api\n"
+                        f"History: {history_summary}"
+                    ),
                 },
             ],
-            "temperature": 0,
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            self.endpoint,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            temperature=0.2,
+            max_tokens=10,
         )
-        try:
-            with request.urlopen(req, timeout=10) as response:
-                body = json.loads(response.read().decode("utf-8"))
-            return body["choices"][0]["message"]["content"]
-        except (OSError, error.URLError, KeyError, IndexError, TypeError, json.JSONDecodeError):
-            return self._scripted_plan(objective)
+        content = response.choices[0].message.content or ""
+        return content.strip() or "CALL unstable_api"
 
-    def _scripted_plan(self, objective: str) -> str:
-        objective_lower = objective.lower()
-        if any(token in objective_lower for token in ("add", "sum", "multiply", "calculate")):
-            return json.dumps({"tool": "calculator", "payload": {"expression": "2 + 2"}})
-        if any(token in objective_lower for token in ("file", "read", "write")):
-            return json.dumps({"tool": "file_ops", "payload": {"operation": "read", "path": "README.md"}})
-        if "unstable" in objective_lower or "api" in objective_lower:
-            return json.dumps({"tool": "unstable_api", "payload": {"resource": "/health"}})
-        return json.dumps({"tool": "calculator", "payload": {"expression": "21 * 2"}})
+    def next_action(self, objective: str, history_summary: str = "") -> str:
+        """Compatibility wrapper for older call sites."""
+
+        return self.get_next_action(
+            [{"objective": objective, "history_summary": history_summary}]
+        )

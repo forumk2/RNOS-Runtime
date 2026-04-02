@@ -27,9 +27,12 @@ class AgentLoop:
         """Execute a short control loop."""
 
         events: list[dict[str, object]] = []
+        retry_count = 0
         for depth in range(max_steps):
-            planned_text = self.planner.next_action(objective, history_summary=str(events[-3:]))
-            action = parse_action(planned_text, depth=depth)
+            planned_text = self.planner.get_next_action(events[-3:])
+            action = parse_action(planned_text)
+            action.depth = depth
+            action.retry_count = retry_count
             assessment = self.runtime.evaluate(action)
 
             events.append(
@@ -43,7 +46,19 @@ class AgentLoop:
             )
 
             if assessment.decision is PolicyDecision.REFUSE:
+                break
+
+            if action.tool_name not in self.tools:
                 self.runtime.record_outcome(action, success=False)
+                events.append(
+                    {
+                        "stage": "tool_result",
+                        "tool": action.tool_name,
+                        "ok": False,
+                        "message": "Unknown tool requested by planner",
+                        "data": {},
+                    }
+                )
                 break
 
             tool = self.tools[action.tool_name]
@@ -52,6 +67,7 @@ class AgentLoop:
 
             result = tool.run(**action.payload)
             self.runtime.record_outcome(action, success=result.ok)
+            retry_count = 0 if result.ok else retry_count + 1
             events.append(
                 {
                     "stage": "tool_result",
