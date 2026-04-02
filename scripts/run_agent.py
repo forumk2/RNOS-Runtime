@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -13,17 +14,19 @@ from agent.parser import parse_action
 from agent.planner import Planner
 from rnos.runtime import RNOSRuntime
 from rnos.types import PolicyDecision
-from tools.unstable_api import UnstableAPITool
+from tools.unstable_api import UnstableAPI, UnstableAPITool
 
 TRACE_PATH = Path(__file__).resolve().parents[1] / "logs" / "rnos_trace.jsonl"
 
 
-def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
+def run_agent(*, max_steps: int, seed: int) -> dict[str, object]:
     """Execute an RNOS-controlled tool loop driven by LM Studio."""
 
+    random.seed(seed)
     planner = Planner()
     rnos = RNOSRuntime()
-    tool = UnstableAPITool(failure_rate=failure_rate)
+    unstable_api = UnstableAPI()
+    tool = UnstableAPITool(api=unstable_api)
     history: list[dict[str, object]] = []
     retry_count = 0
     refused = False
@@ -33,13 +36,10 @@ def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
     steps_executed = 0
 
     print("=== LM Studio RNOS Loop ===")
-    print(f"failure_rate={failure_rate:.2f} max_steps={max_steps}")
+    print(f"seed={seed} max_steps={max_steps}")
 
     for step in range(1, max_steps + 1):
-        if degrade_remaining == 0:
-            print(f"[step {step:02d}] stop=DEGRADE budget exhausted")
-            break
-
+        had_degrade_budget = degrade_remaining is not None
         llm_output = planner.get_next_action(history)
         action = parse_action(llm_output)
         action.depth = step - 1
@@ -61,6 +61,10 @@ def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
         if assessment.decision is PolicyDecision.REFUSE:
             refused = True
             print("           stop=RNOS refused execution")
+            break
+
+        if degrade_remaining == 0:
+            print("           stop=DEGRADE budget exhausted")
             break
 
         if action.tool_name != "unstable_api":
@@ -87,13 +91,18 @@ def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
 
         result = tool.run(**action.payload)
         steps_executed += 1
-        rnos.record_outcome(action, success=result.ok)
+        rnos.record_outcome(action, success=result.success)
 
         print(
             "           tool_result="
-            f"{'SUCCESS' if result.ok else 'FAILURE'} ({result.message})"
+            f"{'SUCCESS' if result.success else 'FAILURE'} ({result.message})"
         )
-        print(f"           result_data={json.dumps(result.data, sort_keys=True)}")
+        print(
+            f"           phase={result.result_data.get('phase')} "
+            f"call_count={result.result_data.get('call_count')} "
+            f"failure_streak={result.result_data.get('failure_streak')}"
+        )
+        print(f"           result_data={json.dumps(result.result_data, sort_keys=True)}")
 
         history.append(
             {
@@ -101,14 +110,15 @@ def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
                 "llm_output": llm_output,
                 "tool": action.tool_name,
                 "decision": assessment.decision.value,
-                "ok": result.ok,
+                "ok": result.success,
+                "phase": result.result_data.get("phase"),
                 "retry_count": retry_count,
             }
         )
 
-        retry_count = 0 if result.ok else retry_count + 1
+        retry_count = 0 if result.success else retry_count + 1
 
-        if degrade_remaining is not None:
+        if had_degrade_budget:
             degrade_remaining = max(0, degrade_remaining - 1)
             print(f"           remaining_degraded_retries={degrade_remaining}")
 
@@ -131,13 +141,13 @@ def run_agent(*, max_steps: int, failure_rate: float) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the LM Studio RNOS agent loop.")
     parser.add_argument("--max-steps", type=int, default=10)
-    parser.add_argument("--failure-rate", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=4)
     args = parser.parse_args()
 
     TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRACE_PATH.write_text("", encoding="utf-8")
 
-    summary = run_agent(max_steps=args.max_steps, failure_rate=args.failure_rate)
+    summary = run_agent(max_steps=args.max_steps, seed=args.seed)
 
     print("\n=== Summary JSON ===")
     print(json.dumps(summary, indent=2))
