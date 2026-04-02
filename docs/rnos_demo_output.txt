@@ -1,0 +1,34 @@
+$ python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run
+
+[DRY RUN] LM Studio not called -- planner returns 'CALL unstable_api' always
+=== LM Studio RNOS Loop ===
+mode=rnos seed=4 max_steps=20 persona=adversarial
+
+[step 01] llm_output='CALL unstable_api' depth=0 entropy=0.000 trust=0.850 decision=ALLOW retry_count=0
+           tool_result=SUCCESS (API call succeeded)
+           phase=stable call_count=1 failure_streak=0
+
+[step 02] llm_output='CALL unstable_api' depth=1 entropy=1.900 trust=1.000 decision=ALLOW retry_count=0
+           tool_result=SUCCESS (API call succeeded)
+           phase=stable call_count=2 failure_streak=0
+
+[step 03] llm_output='CALL unstable_api' depth=2 entropy=3.800 trust=0.883 decision=DEGRADE retry_count=0
+           degraded_mode=True constraints={"allow_side_effects": false, "max_additional_steps": 1}
+           tool_result=FAILURE (transient_failure)
+           phase=unstable call_count=3 failure_streak=1
+           remaining_degraded_retries=0
+
+[step 04] llm_output='CALL unstable_api' depth=3 entropy=6.350 trust=0.337 decision=REFUSE retry_count=1
+           stop=RNOS refused execution
+
+Summary
+  mode=rnos
+  total_loop_steps=4
+  total_steps_executed=3
+  total_tool_failures=1
+  refused=True
+  final_entropy=6.350
+  final_trust=0.337
+  final_state=refused
+  first_intervention_step=3
+  first_intervention_type=degrade

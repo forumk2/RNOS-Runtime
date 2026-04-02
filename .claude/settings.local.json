@@ -11,7 +11,9 @@
       "Bash(python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run --circuit-breaker --cb-threshold 1)",
       "Bash(python scripts/run_agent.py --max-steps 10 --seed 4 --dry-run --circuit-breaker --no-rnos)",
       "Bash(python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run)",
-      "Bash(python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run --no-rnos)"
+      "Bash(python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run --no-rnos)",
+      "Bash(python scripts/run_comparison.py --max-steps 20 --seed 4 --dry-run --tag \"readme\")",
+      "Bash(pip install:*)"
     ]
   }
 }

@@ -31,13 +31,13 @@ def _banner(title: str) -> str:
 
     Example output::
 
-        ╔══════════════════════════════════╗
-        ║  Circuit Breaker Mode            ║
-        ╚══════════════════════════════════╝
+        +----------------------------------+
+        |  Circuit Breaker Mode            |
+        +----------------------------------+
     """
     inner = f"  {title:<{_BANNER_INNER_WIDTH - 2}}"
-    bar = "═" * _BANNER_INNER_WIDTH
-    return f"\n╔{bar}╗\n║{inner}║\n╚{bar}╝"
+    bar = "-" * _BANNER_INNER_WIDTH
+    return f"\n+{bar}+\n|{inner}|\n+{bar}+"
 
 
 def _run_mode(
