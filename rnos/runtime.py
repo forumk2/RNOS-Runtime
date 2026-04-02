@@ -32,8 +32,12 @@ class RNOSRuntime:
         )
         write_trace(
             {
+                "stage": "assessment",
                 "tool": action.tool_name,
                 "payload": action.payload,
+                "depth": action.depth,
+                "retry_count": action.retry_count,
+                "metadata": action.metadata,
                 "entropy": assessment.entropy,
                 "trust": assessment.trust,
                 "decision": assessment.decision.value,
@@ -48,3 +52,14 @@ class RNOSRuntime:
 
         action.success = success
         self.history.append(action)
+        write_trace(
+            {
+                "stage": "outcome",
+                "tool": action.tool_name,
+                "payload": action.payload,
+                "depth": action.depth,
+                "retry_count": action.retry_count,
+                "metadata": action.metadata,
+                "success": success,
+            }
+        )

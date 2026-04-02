@@ -11,7 +11,7 @@ def evaluate_policy(entropy: float, trust: float) -> RuntimeAssessment:
     reasons: list[str] = []
     constraints: dict[str, int | bool] = {}
 
-    if entropy >= 7.0 or trust <= 0.2:
+    if entropy >= 6.0 or trust <= 0.2:
         reasons.append("runtime_unstable")
         return RuntimeAssessment(
             entropy=entropy,
@@ -20,7 +20,7 @@ def evaluate_policy(entropy: float, trust: float) -> RuntimeAssessment:
             reasons=reasons,
         )
 
-    if entropy >= 4.5 or trust <= 0.45:
+    if entropy >= 3.0 or trust <= 0.45:
         reasons.append("caution_window")
         constraints["max_additional_steps"] = 1
         constraints["allow_side_effects"] = False
