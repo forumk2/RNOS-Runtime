@@ -4,7 +4,7 @@
 
 ---
 
-## 🧠 Overview
+## Overview
 
 RNOS Runtime is a control layer for autonomous AI systems.
 
@@ -20,7 +20,7 @@ RNOS Runtime introduces a simple but critical capability:
 
 ---
 
-## 🔥 Motivation
+## Motivation
 
 I used to think I didn’t want to work on high-stakes systems.
 
@@ -28,13 +28,13 @@ The consequences felt too real — aviation, medical systems, mission-critical i
 
 But as AI systems became more autonomous, something changed:
 
-> the stakes are no longer optional — they are emerging everywhere.
+> the stakes are no longer optional, they are emerging everywhere.
 
 Instead of building a single high-stakes system, RNOS Runtime is an attempt to build a layer that helps *any* system behave safely under uncertainty.
 
 ---
 
-## ⚠️ The Problem
+## The Problem
 
 Modern AI systems are no longer passive.
 
@@ -60,7 +60,7 @@ But they do not answer:
 
 ---
 
-## 🌊🔥 The RNOS Model
+## The RNOS Model
 
 RNOS is based on a simple metaphor:
 
@@ -75,7 +75,7 @@ It ensures execution remains **bounded, controlled, and meaningful**.
 
 ---
 
-## 🧩 Architecture
+## Architecture
 
 ```
 
@@ -83,7 +83,7 @@ User
 ↓
 Agent (LLM / Planner)
 ↓
-🔥 RNOS Runtime 🔥
+RNOS Runtime
 ↓
 Tools (APIs, DB, File System, etc.)
 
@@ -95,7 +95,7 @@ Every proposed action is evaluated before execution.
 
 ---
 
-## ⚙️ Core Concepts
+## Core Concepts
 
 ### 1. Entropy
 
@@ -151,7 +151,7 @@ RNOS supports multiple behaviors:
 
 ---
 
-## 🧪 Example
+## Example
 
 ```
 
@@ -175,7 +175,7 @@ reason: entropy_exceeded
 
 ---
 
-## 🧠 Philosophy
+## Philosophy
 
 RNOS is not about making systems perfect.
 
@@ -210,7 +210,7 @@ This repository contains:
 
 ---
 
-## 🧩 Positioning
+## Positioning
 
 RNOS Runtime is not:
 - a model
@@ -225,7 +225,7 @@ It is:
 
 ## 📜 License
 
-TBD
+This project is licensed under the MIT License. See the LICENSE file for details.
 
 ---
 
