@@ -23,6 +23,7 @@ _MODES: list[tuple[str, list[str]]] = [
     ("RNOS Mode", []),
     ("Circuit Breaker Mode", ["--circuit-breaker"]),
     ("Baseline Mode", ["--no-rnos"]),
+    ("Hybrid Mode", ["--hybrid"]),
 ]
 
 

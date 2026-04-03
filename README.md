@@ -70,12 +70,13 @@ Four experiments test RNOS across progressively harder discrimination tasks. Eac
 - **Adaptive CB** — sliding-window failure-rate breaker with exponential backoff and adaptive threshold
 - **Baseline** — unprotected execution
 
-| Experiment | Scenario Type | RNOS | CB | Baseline | Key Finding |
-|---|---|---|---|---|---|
-| 2 — Selective Containment | Cascade vs. recoverable instability | 3/3 | 3/3 | 2/3 | Both strategies match; baseline cannot discriminate |
-| 2.5 — Matched-Entropy Discrimination | Identical-state divergence | 4/4 | 4/4 | 2/4 | RNOS withholds judgment until signal is observable |
-| 3 — Intermittent Cascading Failure | Bursty failure with deceptive recovery | 4/4 | 4/4 | 2/4 | RNOS detects 7 steps earlier via cumulative entropy |
-| 4 — Distributed Instability | Diffuse, non-consecutive failure | **3/4** | **4/4** | 2/4 | CB detects what RNOS misses; entropy ceiling exposed |
+| Experiment | Scenario Type | RNOS | CB | Hybrid | Baseline | Key Finding |
+|---|---|---|---|---|---|---|
+| 2 — Selective Containment | Cascade vs. recoverable instability | 3/3 | 3/3 | — | 2/3 | Both strategies match; baseline cannot discriminate |
+| 2.5 — Matched-Entropy Discrimination | Identical-state divergence | 4/4 | 4/4 | — | 2/4 | RNOS withholds judgment until signal is observable |
+| 3 — Intermittent Cascading Failure | Bursty failure with deceptive recovery | 4/4 | 4/4 | — | 2/4 | RNOS detects 7 steps earlier via cumulative entropy |
+| 4 — Distributed Instability | Diffuse, non-consecutive failure | **3/4** | **4/4** | — | 2/4 | CB detects what RNOS misses; entropy ceiling exposed |
+| 5 — Hybrid Cooperative Control | Cascading burst + distributed low-rate | 7 exec | 10 exec | **7 exec** | 30 exec | Hybrid ≥ best(RNOS, CB) in both geometries; trigger source identified per scenario |
 
 ---
 
@@ -182,12 +183,40 @@ RNOS cannot reach the 9.0 DEGRADE threshold when consecutive failures are capped
 
 ---
 
+---
+
+### Experiment 5 — Hybrid Cooperative Control
+
+Experiments 1–4 established that RNOS and CB have complementary detection profiles. Experiment 5 asks: does composing them into a single hybrid controller produce a dominant architecture — one that is at least as good as either sub-system on every failure geometry?
+
+The hybrid uses a **safety-first merge**: RNOS and CB both evaluate each step; the more-severe decision wins. A `trigger_source` field records which sub-system drove each intervention ("rnos", "cb", or "both").
+
+Two scenarios target each sub-system's known strength:
+
+**Scenario A — `cascading_burst`** (RNOS strength): 7 consecutive failures beginning at step 3, absorbing thereafter. RNOS's `retry_score` accumulates 1.0 per consecutive failure, crossing the DEGRADE threshold before the CB's 10-step window fills.
+
+**Scenario B — `distributed_low_rate`** (CB strength): repeating F-F-S pattern (67% failure rate, ≤2 consecutive). `retry_count` resets every third step, capping `retry_score` at 2.0. RNOS entropy peaks at 8.7 — 0.3 below DEGRADE (9.0). The CB's window fills with 7/10 failures after 10 executions and trips.
+
+Results (tool executions before termination):
+
+| Scenario | Baseline | RNOS | CB | Hybrid | Best |
+|---|---|---|---|---|---|
+| `cascading_burst` | 30 | 7 | 10 | **7** | RNOS = Hybrid |
+| `distributed_low_rate` | 30 | 30 | 10 | **10** | CB = Hybrid |
+
+**Trigger source** confirms the mechanism: hybrid intervention on `cascading_burst` is `"rnos"` (CB window not yet full); on `distributed_low_rate` it is `"cb"` (RNOS never reaches its threshold).
+
+**Conclusion:** Hybrid performs ≥ best(RNOS, CB) in both scenarios and strictly outperforms each sub-system on at least one axis — 3 fewer wasted executions than CB on cascading failure, 20 fewer than RNOS on distributed failure. The safety-first merge is sufficient to achieve cooperative dominance without requiring coordination between sub-systems.
+
+---
+
 ### Key Takeaways
 
 - RNOS and CB have complementary detection profiles. Framing them as competitors misrepresents the results.
 - RNOS detects structured cascading failure earlier: 7-step advantage on `intermittent_cascade`, explained by cumulative entropy preserving cross-burst state that CB's sliding window discards.
 - CB detects distributed failure density better: catches `smoldering_instability` at step 18; RNOS does not catch it at any step.
 - RNOS has a structural blind spot when consecutive failure streaks are capped at ≤2. The retry-based entropy component cannot rise high enough to trigger DEGRADE under that constraint, regardless of sustained failure rate.
+- **Hybrid composition (Experiment 5) resolves the complementarity directly.** A safety-first merge of RNOS + CB matches or beats both sub-systems on every tested failure geometry. The `trigger_source` field makes the contributing sub-system observable per-step.
 - The persistence signals logged in Experiment 4 clearly separate the scenarios RNOS cannot distinguish. These are observational only and are not currently modeled in the entropy formula.
 
 ---
@@ -230,6 +259,9 @@ python scripts/run_agent.py --max-steps 20 --seed 4
 # Circuit breaker
 python scripts/run_agent.py --max-steps 20 --seed 4 --circuit-breaker
 
+# Hybrid (RNOS + AdaptiveCircuitBreaker, safety-first merge)
+python scripts/run_agent.py --max-steps 20 --seed 4 --hybrid
+
 # Baseline (no protection)
 python scripts/run_agent.py --max-steps 20 --seed 4 --no-rnos
 
@@ -237,12 +269,21 @@ python scripts/run_agent.py --max-steps 20 --seed 4 --no-rnos
 python scripts/run_agent.py --max-steps 20 --seed 4 --dry-run
 ```
 
-### Run All Three and Generate Report
+### Run All Four Modes and Generate Report
 
 ```bash
 python scripts/run_comparison.py --max-steps 20 --seed 4 --tag "my-test"
 python scripts/run_comparison.py --max-steps 20 --seed 4 --dry-run --tag "verify"
 ```
+
+### Run Experiment 5 (Hybrid Cooperative Control)
+
+```bash
+python experiments/experiment_5_hybrid/run_experiment_5.py
+python experiments/experiment_5_hybrid/run_experiment_5.py --seed 42 --max-steps 30
+```
+
+Results are written to `results/experiment_5/` (per-step CSVs) and `docs/experiment_5_hybrid.md`.
 
 ### Generate Report from Existing Data
 
@@ -283,15 +324,16 @@ Tools (APIs, DB, File System)
 
 RNOS sits between the planner and execution. It does not replace the planner — it evaluates the planner's output before any action is taken.
 
-### RNOS vs. Circuit Breaker
+### RNOS vs. Circuit Breaker vs. Hybrid
 
-| Property | RNOS | Circuit Breaker |
-|---|---|---|
-| State model | Cumulative across full run | Sliding window (recent N steps) |
-| Response | Graduated: ALLOW / DEGRADE / REFUSE | Binary: allow or block |
-| On REFUSE | Terminates agent loop | Blocks tool; planner keeps running |
-| Advantage | Structured cascading failure (cross-burst memory) | Diffuse failure density (non-consecutive) |
-| Standard | Experimental | Production (AWS, gRPC, Kubernetes) |
+| Property | RNOS | Circuit Breaker | Hybrid |
+|---|---|---|---|
+| State model | Cumulative across full run | Sliding window (recent N steps) | Both |
+| Response | Graduated: ALLOW / DEGRADE / REFUSE | Binary: allow or block | Graduated (max-severity merge) |
+| On REFUSE | Terminates agent loop | Blocks tool; planner keeps running | Terminates agent loop |
+| Advantage | Structured cascading failure (cross-burst memory) | Diffuse failure density (non-consecutive) | ≥ best of both on any geometry |
+| Trigger visibility | entropy + trust signals | window failure rate | `trigger_source`: "rnos" / "cb" / "both" |
+| Standard | Experimental | Production (AWS, gRPC, Kubernetes) | Experimental |
 
 ---
 
@@ -303,10 +345,12 @@ rnos/
   trust.py             # Trust model (success-rate baseline minus entropy penalty)
   policy.py            # ALLOW / DEGRADE / REFUSE policy engine
   runtime.py           # Main evaluation loop
+  hybrid.py            # HybridController (RNOS + CB, safety-first merge)
   types.py             # Shared data structures
 
 baselines/
-  circuit_breaker.py   # Adaptive exponential-backoff circuit breaker
+  circuit_breaker.py          # Exponential-backoff circuit breaker
+  adaptive_circuit_breaker.py # Sliding-window adaptive circuit breaker
 
 agent/
   planner.py           # LM Studio OpenAI-compatible client
@@ -319,12 +363,17 @@ tools/
   file_ops.py          # Sandboxed file operations
 
 scripts/
-  run_agent.py                 # Single-mode runner
-  run_comparison.py            # Three-way batch runner
+  run_agent.py                 # Single-mode runner (--rnos / --circuit-breaker / --hybrid / --no-rnos)
+  run_comparison.py            # Four-way batch runner + report
   generate_report.py           # Markdown + chart report generator
   generate_entropy_chart.py    # Entropy / trust progression chart
 
-docs/                  # README assets (committed)
+experiments/
+  experiment_5_hybrid/
+    scenarios.py       # cascading_burst and distributed_low_rate scenario definitions
+    run_experiment_5.py # 4-mode batch runner; writes CSVs + docs/experiment_5_hybrid.md
+
+docs/                  # Analysis reports (committed)
 results/               # Run data (gitignored)
 ```
 

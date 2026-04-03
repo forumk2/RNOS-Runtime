@@ -17,8 +17,10 @@ import yaml
 
 from agent.parser import parse_action
 from agent.planner import Planner, PersonaName
+from baselines.adaptive_circuit_breaker import AdaptiveCircuitBreaker
 from baselines.circuit_breaker import CircuitBreaker
 from rnos.coherence import compute_runtime_coherence, format_runtime_coherence_report
+from rnos.hybrid import HybridController
 from rnos.logger import write_trace
 from rnos.policy import PolicyConfig
 from rnos.runtime import RNOSRuntime
@@ -127,10 +129,14 @@ def run_agent(
     seed: int,
     no_rnos: bool = False,
     circuit_breaker: bool = False,
+    hybrid: bool = False,
     cb_threshold: int = 3,
     cb_cooldown: int = 1,
     cb_max_cooldown: int = 8,
     cb_max_blocked: int = 10,
+    acb_window: int = 10,
+    acb_threshold: float = 0.6,
+    acb_cooldown: int = 3,
     dry_run: bool = False,
     persona: PersonaName = "adversarial",
     config_path: Path | None = None,
@@ -144,11 +150,17 @@ def run_agent(
         no_rnos: When True, skip all RNOS evaluation (decision printed as
             ``BYPASS``). The loop runs until ``max_steps`` is exhausted.
         circuit_breaker: When True, use exponential backoff circuit breaker
-            instead of RNOS. Mutually exclusive with ``no_rnos``.
+            instead of RNOS. Mutually exclusive with ``no_rnos`` and ``hybrid``.
+        hybrid: When True, compose RNOS + AdaptiveCircuitBreaker with
+            safety-first merge. Mutually exclusive with ``circuit_breaker``
+            and ``no_rnos``.
         cb_threshold: Consecutive failures before the circuit breaker trips.
         cb_cooldown: Initial cooldown steps before the first probe.
         cb_max_cooldown: Maximum cooldown ceiling after exponential growth.
         cb_max_blocked: Total blocked steps before permanently opening.
+        acb_window: Sliding window size for the adaptive CB used in hybrid mode.
+        acb_threshold: Failure-rate threshold for the adaptive CB (0.0–1.0).
+        acb_cooldown: Initial cooldown steps for the adaptive CB.
         dry_run: Replace :class:`Planner` with a stub; no LM Studio required.
         persona: System-prompt persona forwarded to :class:`Planner`.
         config_path: Optional path to a YAML file with ``policy`` thresholds.
@@ -177,6 +189,7 @@ def run_agent(
 
     # --- circuit breaker setup -----------------------------------------------
     cb: CircuitBreaker | None = None
+    hybrid_ctrl: HybridController | None = None
     total_blocked_steps = 0
     max_cooldown_reached = False
     if circuit_breaker:
@@ -186,6 +199,13 @@ def run_agent(
             max_cooldown_steps=cb_max_cooldown,
             max_total_blocked=cb_max_blocked,
         )
+    elif hybrid:
+        _acb = AdaptiveCircuitBreaker(
+            window_size=acb_window,
+            initial_failure_rate=acb_threshold,
+            initial_cooldown_steps=acb_cooldown,
+        )
+        hybrid_ctrl = HybridController(rnos, _acb)
 
     # --- loop state ----------------------------------------------------------
     history: list[dict[str, object]] = []
@@ -227,6 +247,13 @@ def run_agent(
             f"cb_threshold={cb_threshold} cb_cooldown={cb_cooldown} "
             f"cb_max_cooldown={cb_max_cooldown} cb_max_blocked={cb_max_blocked}"
         )
+    elif hybrid:
+        mode_label = "hybrid"
+        print(
+            f"mode={mode_label} seed={seed} max_steps={max_steps} persona={persona} "
+            f"acb_window={acb_window} acb_threshold={acb_threshold} "
+            f"acb_cooldown={acb_cooldown}"
+        )
     else:
         mode_label = "baseline (--no-rnos)" if no_rnos else "rnos"
         print(f"mode={mode_label} seed={seed} max_steps={max_steps} persona={persona}")
@@ -256,8 +283,90 @@ def run_agent(
         executed_in_degrade = False  # RNOS only
         cb_reason: str = "closed"   # circuit breaker only; set below
         assessment = None           # RNOS only; avoids NameError in history append
+        hybrid_decision = None      # hybrid mode only
 
-        if circuit_breaker:
+        if hybrid:
+            # -----------------------------------------------------------------
+            # Hybrid path -- RNOS + AdaptiveCircuitBreaker, safety-first merge
+            # -----------------------------------------------------------------
+            assert hybrid_ctrl is not None
+            hybrid_ctrl.tick()
+            hybrid_decision = hybrid_ctrl.evaluate(action)
+
+            final_entropy = hybrid_decision.rnos_entropy
+            final_trust = hybrid_decision.rnos_trust
+
+            print(
+                f"[step {step:02d}] llm_output={llm_output!r} depth={action.depth} "
+                f"entropy={hybrid_decision.rnos_entropy:.3f} "
+                f"trust={hybrid_decision.rnos_trust:.3f} "
+                f"rnos={hybrid_decision.rnos_decision} "
+                f"cb_state={hybrid_decision.cb_state} "
+                f"cb_failure_rate={hybrid_decision.cb_failure_rate:.3f} "
+                f"hybrid={hybrid_decision.decision} "
+                f"trigger={hybrid_decision.trigger_source}"
+            )
+
+            if hybrid_decision.decision == "REFUSE":
+                if first_intervention_step is None:
+                    first_intervention_step = step
+                    first_intervention_type = "refuse"
+                stop_reason = "refused"
+                refused = True
+                phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+                _append_execution_step(
+                    step_trace,
+                    trace_path=TRACE_PATH,
+                    step=step,
+                    tool=action.tool_name,
+                    phase=phase,
+                    phase_source=phase_source,
+                    decision="STOPPED",
+                    decision_raw=f"HYBRID_REFUSE ({hybrid_decision.trigger_source})",
+                    tool_result="BLOCKED",
+                    tool_result_raw="BLOCKED",
+                    consecutive_failures=retry_count,
+                    cooldown_remaining=0,
+                    planner_latency_ms=planner_latency_ms,
+                    planner_emitted_tool_call=bool(action.tool_name),
+                )
+                print("           stop=HYBRID refused execution")
+                break
+
+            if hybrid_decision.decision == "DEGRADE":
+                if first_intervention_step is None:
+                    first_intervention_step = step
+                    first_intervention_type = "degrade"
+                if degrade_remaining is None:
+                    rnos_constraints = hybrid_decision.rnos_assessment.constraints
+                    degrade_remaining = int(rnos_constraints.get("max_additional_steps", 1))
+                elif degrade_remaining == 0:
+                    stop_reason = "degrade_exhausted"
+                    phase, phase_source = _resolve_phase(None, last_phase=last_phase)
+                    _append_execution_step(
+                        step_trace,
+                        trace_path=TRACE_PATH,
+                        step=step,
+                        tool=action.tool_name,
+                        phase=phase,
+                        phase_source=phase_source,
+                        decision="STOPPED",
+                        decision_raw="HYBRID_DEGRADE_EXHAUSTED",
+                        tool_result="BLOCKED",
+                        tool_result_raw="BLOCKED",
+                        consecutive_failures=retry_count,
+                        cooldown_remaining=0,
+                        planner_latency_ms=planner_latency_ms,
+                        planner_emitted_tool_call=bool(action.tool_name),
+                    )
+                    print("           stop=HYBRID DEGRADE budget exhausted")
+                    break
+                executed_in_degrade = True
+                action.payload["_rnos_constraints"] = hybrid_decision.rnos_assessment.constraints
+            elif hybrid_decision.decision == "ALLOW":
+                degrade_remaining = None
+
+        elif circuit_breaker:
             # -----------------------------------------------------------------
             # Circuit breaker path -- no RNOS calls
             # -----------------------------------------------------------------
@@ -416,7 +525,10 @@ def run_agent(
         # --- unknown-tool guard ----------------------------------------------
         if action.tool_name != "unstable_api":
             print("           tool_result=SKIPPED (planner requested unknown tool)")
-            if not no_rnos and not circuit_breaker:
+            if hybrid:
+                assert hybrid_ctrl is not None
+                hybrid_ctrl.record_outcome(action, success=False)
+            elif not no_rnos and not circuit_breaker:
                 rnos.record_outcome(action, success=False)
             total_failures += 1
             steps_executed += 1
@@ -426,6 +538,10 @@ def run_agent(
                 consecutive_failures = int(cb.stats["consecutive_failures"])
                 cooldown_remaining = int(cb.stats["cooldown_remaining"])
                 decision_raw = decision_str
+            elif hybrid:
+                consecutive_failures = retry_count + 1
+                cooldown_remaining = 0
+                decision_raw = f"HYBRID_{hybrid_decision.decision}" if hybrid_decision else "HYBRID_ALLOW"
             else:
                 consecutive_failures = retry_count + 1
                 cooldown_remaining = 0
@@ -470,6 +586,9 @@ def run_agent(
             cb_stats = cb.stats
             if cb_stats["current_cooldown_limit"] >= cb_max_cooldown:
                 max_cooldown_reached = True
+        elif hybrid:
+            assert hybrid_ctrl is not None
+            hybrid_ctrl.record_outcome(action, success=result.success)
         elif not no_rnos:
             rnos.record_outcome(action, success=result.success)
 
@@ -503,6 +622,16 @@ def run_agent(
             consecutive_failures = int(cb_stats["consecutive_failures"])
             cooldown_remaining = int(cb_stats["cooldown_remaining"])
             decision_raw = decision_str
+        elif hybrid:
+            assert hybrid_decision is not None
+            print(
+                f"           hybrid_state={hybrid_decision.cb_state} "
+                f"cb_failure_rate={hybrid_decision.cb_failure_rate:.3f} "
+                f"trigger={hybrid_decision.trigger_source}"
+            )
+            consecutive_failures = retry_count + 1 if not result.success else 0
+            cooldown_remaining = 0
+            decision_raw = f"HYBRID_{hybrid_decision.decision}"
         else:
             consecutive_failures = 0 if result.success else retry_count + 1
             cooldown_remaining = 0
@@ -539,7 +668,10 @@ def run_agent(
                 "tool": action.tool_name,
                 "decision": (
                     cb_reason if circuit_breaker
-                    else ("bypass" if no_rnos else assessment.decision.value)
+                    else (
+                        hybrid_decision.decision.lower() if hybrid and hybrid_decision
+                        else ("bypass" if no_rnos else assessment.decision.value)
+                    )
                 ),
                 "ok": result.success,
                 "phase": result.result_data.get("phase"),
@@ -559,9 +691,45 @@ def run_agent(
 
     coherence_report = compute_runtime_coherence(step_trace)
 
-    if circuit_breaker:
-        assert cb is not None
+    if hybrid:
+        assert hybrid_ctrl is not None
+        _hcb = hybrid_ctrl.cb
         summary: dict[str, object] = {
+            "mode": "hybrid",
+            "total_loop_steps": last_step,
+            "total_steps_executed": steps_executed,
+            "total_tool_failures": total_failures,
+            "refused": refused,
+            "final_entropy": final_entropy,
+            "final_trust": final_trust,
+            "final_state": stop_reason,
+            "first_intervention_step": first_intervention_step,
+            "first_intervention_type": first_intervention_type,
+            "acb_window": acb_window,
+            "acb_threshold": acb_threshold,
+            "duration_seconds": round(duration_seconds, 3),
+            "planner_latency_total_ms": round(planner_latency_total_ms, 1),
+            "tool_latency_total_ms": round(tool_latency_total_ms, 1),
+            "seed": seed,
+            "max_steps": max_steps,
+            "execution_trace": step_trace,
+            "runtime_coherence": coherence_report,
+        }
+        print("\nSummary")
+        print(f"  mode={summary['mode']}")
+        print(f"  total_loop_steps={last_step}")
+        print(f"  total_steps_executed={steps_executed}")
+        print(f"  total_tool_failures={total_failures}")
+        print(f"  refused={refused}")
+        print(f"  final_entropy={final_entropy:.3f}")
+        print(f"  final_trust={final_trust:.3f}")
+        print(f"  final_state={stop_reason}")
+        print(f"  first_intervention_step={first_intervention_step}")
+        print(f"  first_intervention_type={first_intervention_type}")
+        print(f"  duration_seconds={duration_seconds:.3f}")
+    elif circuit_breaker:
+        assert cb is not None
+        summary = {
             "mode": "circuit_breaker",
             "total_loop_steps": last_step,
             "total_steps_executed": steps_executed,
@@ -686,6 +854,35 @@ def main() -> None:
         help="Maximum cooldown ceiling after exponential growth (default: 8).",
     )
     parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help=(
+            "Compose RNOS + AdaptiveCircuitBreaker with safety-first merge. "
+            "Mutually exclusive with --circuit-breaker and --no-rnos."
+        ),
+    )
+    parser.add_argument(
+        "--acb-window",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Sliding window size for the hybrid AdaptiveCircuitBreaker (default: 10).",
+    )
+    parser.add_argument(
+        "--acb-threshold",
+        type=float,
+        default=0.6,
+        metavar="F",
+        help="Failure-rate threshold for the hybrid AdaptiveCircuitBreaker (default: 0.6).",
+    )
+    parser.add_argument(
+        "--acb-cooldown",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Initial cooldown steps for the hybrid AdaptiveCircuitBreaker (default: 3).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Replace the LM Studio planner with a stub (no LM Studio required).",
@@ -715,6 +912,9 @@ def main() -> None:
     if args.circuit_breaker and args.no_rnos:
         print("Error: --circuit-breaker and --no-rnos are mutually exclusive.")
         sys.exit(1)
+    if args.hybrid and (args.circuit_breaker or args.no_rnos):
+        print("Error: --hybrid is mutually exclusive with --circuit-breaker and --no-rnos.")
+        sys.exit(1)
 
     TRACE_PATH.parent.mkdir(parents=True, exist_ok=True)
     TRACE_PATH.write_text("", encoding="utf-8")
@@ -724,10 +924,14 @@ def main() -> None:
         seed=args.seed,
         no_rnos=args.no_rnos,
         circuit_breaker=args.circuit_breaker,
+        hybrid=args.hybrid,
         cb_threshold=args.cb_threshold,
         cb_cooldown=args.cb_cooldown,
         cb_max_cooldown=args.cb_max_cooldown,
         cb_max_blocked=10,
+        acb_window=args.acb_window,
+        acb_threshold=args.acb_threshold,
+        acb_cooldown=args.acb_cooldown,
         dry_run=args.dry_run,
         persona=args.persona,
         config_path=args.config,
