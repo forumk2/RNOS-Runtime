@@ -48,6 +48,12 @@ These combine into three decisions:
 | **DEGRADE** | entropy 3.0–6.0 or trust 0.2–0.45 | Execute with constraints: no side effects, limited retries |
 | **REFUSE** | entropy ≥ 6.0 or trust ≤ 0.2 | Terminate the loop |
 
+> **Note on thresholds:**
+> The thresholds shown here are illustrative defaults for explaining the RNOS decision model.
+> The RNOS-Runtime experimental suite (including discrimination and hybrid control experiments) uses calibrated thresholds (DEGRADE = 9.0, REFUSE = 11.0) to better separate decision regimes under controlled scenarios, accounting for a structural entropy floor of ~4.0 produced by repeated tool use and cumulative cost.
+>
+> These differences reflect **experimental calibration**, not a change in the underlying policy structure.
+
 REFUSE terminates the entire agent loop, not just the current tool call. This means neither tool execution nor planner inference continues — both sources of wasted compute stop.
 
 ---

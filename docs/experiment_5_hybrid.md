@@ -2,6 +2,17 @@
 
 **Seed:** 42  **Max steps:** 30  **CB:** AdaptiveCircuitBreaker(window=10, threshold=0.6)  **Policy:** EXP2_POLICY (degrade=9.0, refuse=11.0)
 
+## Threshold Configuration
+
+The RNOS controller in this experiment uses calibrated thresholds from the RNOS-Runtime discrimination suite:
+
+- **DEGRADE:** 9.0
+- **REFUSE:** 11.0
+
+These differ from the illustrative thresholds shown in the repository README (DEGRADE = 3.0, REFUSE = 6.0). The higher values are used here because ConfigurableAPI scenarios produce a structural entropy floor of approximately 4.0 — from `repeated_tool` (2.0) and `cost_score` (2.0, saturating after ~7 steps) — which is present in every run regardless of failure pattern. The illustrative thresholds would cause DEGRADE to fire on this floor alone, obscuring meaningful discrimination between scenarios. The calibrated thresholds place DEGRADE and REFUSE above the structural floor, so decisions reflect actual instability signals rather than baseline execution cost.
+
+This is an experimental configuration choice and does not alter the structure of the RNOS policy.
+
 ## Results Table
 
 Metric: tool_executions (actual API calls before termination).
