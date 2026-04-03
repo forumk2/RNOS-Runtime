@@ -196,6 +196,87 @@ def make_slow_burn(seed: int = 42) -> ConfigurableAPI:
     )
 
 
+def make_matched_recovery(seed: int = 42) -> ConfigurableAPI:
+    """Matched pair (recovery branch): identical to make_matched_collapse through step 6.
+
+    Steps 1-2 succeed (normal, 80ms).
+    Step 3 succeeds with high latency (500ms) — instability signal begins.
+    Steps 4-6 fail (400ms) — shared instability window.
+    Steps 7+ succeed with decreasing latency — genuine recovery.
+
+    Ground truth: benign — should NOT intervene.
+
+    The step-6 entropy is identical to make_matched_collapse; divergence
+    becomes observable only from step 7 onward.
+    """
+    schedule = [
+        {"success": True},
+        {"success": True},
+        {"success": True},    # step 3: success but slow (instability onset)
+        {"success": False},   # step 4: first shared failure
+        {"success": False},   # step 5: second shared failure
+        {"success": False},   # step 6: third shared failure
+        {"success": True},    # step 7: recovery begins (divergence point)
+        {"success": True},
+        {"success": True},
+        {"success": True},
+        {"success": True},
+        {"success": True},
+    ]
+    latency = [
+        80.0, 80.0, 500.0,        # steps 1-3
+        400.0, 400.0, 400.0,      # steps 4-6 (shared failure window)
+        350.0, 280.0, 200.0, 150.0, 100.0, 80.0,  # steps 7-12: recovery
+    ] + [80.0] * 8                # steps 13-20
+    return ConfigurableAPI(
+        name="matched_recovery",
+        step_schedule=schedule,
+        fail_probs=[0.0],          # steps beyond schedule: always succeed
+        latency_profile=latency,
+        cost_profile=[0.01] * 20,
+        seed=seed,
+    )
+
+
+def make_matched_collapse(seed: int = 42) -> ConfigurableAPI:
+    """Matched pair (collapse branch): identical to make_matched_recovery through step 6.
+
+    Steps 1-2 succeed (normal, 80ms).
+    Step 3 succeeds with high latency (500ms) — instability signal begins.
+    Steps 4-6 fail (400ms) — shared instability window.
+    Steps 7-9 fail explicitly [420ms, 450ms, 480ms] — collapse deepens.
+    Steps 10+ always fail (fail_probs=[1.0]) at 500ms — absorbing failure regime.
+
+    Ground truth: structural — should intervene.
+
+    After step 6 consecutive_failures=3; divergence point is step 7.
+    """
+    schedule = [
+        {"success": True},
+        {"success": True},
+        {"success": True},    # step 3: success but slow
+        {"success": False},   # step 4: first shared failure
+        {"success": False},   # step 5: second shared failure
+        {"success": False},   # step 6: third shared failure (end of shared window)
+        {"success": False},   # step 7: collapse deepens (divergence point)
+        {"success": False},   # step 8
+        {"success": False},   # step 9
+    ]
+    latency = [
+        80.0, 80.0, 500.0,              # steps 1-3
+        400.0, 400.0, 400.0,            # steps 4-6 (shared failure window)
+        420.0, 450.0, 480.0,            # steps 7-9 (collapse deepens)
+    ] + [500.0] * 11                    # steps 10-20 (absorbing regime)
+    return ConfigurableAPI(
+        name="matched_collapse",
+        step_schedule=schedule,
+        fail_probs=[1.0],              # steps 10+: certain failure
+        latency_profile=latency,
+        cost_profile=[0.01] * 20,
+        seed=seed,
+    )
+
+
 def make_runaway_cascade(seed: int = 42) -> ConfigurableAPI:
     """Steps 1-2 succeed; steps 3-4 fail explicitly; steps 5+ certain failure.
 
