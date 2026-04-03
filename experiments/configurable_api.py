@@ -196,6 +196,129 @@ def make_slow_burn(seed: int = 42) -> ConfigurableAPI:
     )
 
 
+def make_bursty_recovery(seed: int = 42) -> tuple["ConfigurableAPI", list[dict[str, Any]]]:
+    """Two short failure bursts followed by genuine sustained recovery.
+
+    Pattern (20 steps):
+      steps  1-2:  stable successes (80 ms)
+      steps  3-5:  burst 1 — 3 failures (400 ms)
+      steps  6-7:  recovery 1 — 2 successes (200 ms, elevated but stabilising)
+      steps  8-9:  burst 2 — 2 failures (350 ms)
+      steps 10-20: sustained recovery — latency normalises 180 → 80 ms
+
+    Ground truth: benign — should NOT permanently intervene.
+    Temporary DEGRADE is acceptable; REFUSE is incorrect.
+    """
+    schedule = [
+        {"success": True},  {"success": True},                              # 1-2
+        {"success": False}, {"success": False}, {"success": False},         # 3-5 burst 1
+        {"success": True},  {"success": True},                              # 6-7 recovery 1
+        {"success": False}, {"success": False},                             # 8-9 burst 2
+        {"success": True},  {"success": True},  {"success": True},          # 10-12
+        {"success": True},  {"success": True},  {"success": True},          # 13-15
+        {"success": True},  {"success": True},  {"success": True},          # 16-18
+        {"success": True},  {"success": True},                              # 19-20
+    ]
+    latency = [
+        80.0, 80.0,                                  # 1-2
+        400.0, 400.0, 400.0,                         # 3-5 burst 1
+        200.0, 200.0,                                # 6-7 recovery 1 (elevated)
+        350.0, 350.0,                                # 8-9 burst 2
+        180.0, 160.0, 140.0, 120.0, 100.0, 90.0,    # 10-15 normalising
+        85.0, 82.0, 80.0, 80.0, 80.0,               # 16-20 stable
+    ]
+    cost = (
+        [0.010, 0.010]          # 1-2
+        + [0.020] * 3           # 3-5 burst 1
+        + [0.015, 0.015]        # 6-7 recovery 1
+        + [0.020, 0.020]        # 8-9 burst 2
+        + [0.010] * 11          # 10-20 recovery
+    )
+    burst_segments: list[dict[str, Any]] = [
+        {"burst_index": 0, "start_step":  1, "end_step":  2, "segment_type": "stable"},
+        {"burst_index": 1, "start_step":  3, "end_step":  5, "segment_type": "burst"},
+        {"burst_index": 1, "start_step":  6, "end_step":  7, "segment_type": "recovery"},
+        {"burst_index": 2, "start_step":  8, "end_step":  9, "segment_type": "burst"},
+        {"burst_index": 2, "start_step": 10, "end_step": 20, "segment_type": "recovery"},
+    ]
+    api = ConfigurableAPI(
+        name="bursty_recovery",
+        step_schedule=schedule,
+        fail_probs=[0.0],
+        latency_profile=latency,
+        cost_profile=cost,
+        seed=seed,
+    )
+    return api, burst_segments
+
+
+def make_intermittent_cascade(seed: int = 42) -> tuple["ConfigurableAPI", list[dict[str, Any]]]:
+    """Three failure bursts with dirty recovery windows; third burst arrives late.
+
+    Pattern (20 steps):
+      steps  1-2:  stable successes (80 ms)
+      steps  3-5:  burst 1 — 3 failures (400 ms)
+      steps  6-7:  recovery 1 — 2 *dirty* successes (280 ms, elevated — not clean)
+      steps  8-10: burst 2 — 3 failures (430 ms)
+      steps 11-13: recovery 2 — 3 *deceptive* successes (300 ms elevated — appears stable)
+      steps 14-16: burst 3 — 3 failures (460 ms)
+      steps 17-20: absorbing failure — fail_probs=[1.0] at 480 ms
+
+    Recovery windows have persistently elevated latency throughout — dirty recoveries.
+    Burst 3 arrives after a deceptively long 3-step recovery window (steps 11-13),
+    testing whether the controller maintains vigilance after apparent stabilisation.
+
+    Ground truth: structural — should intervene.
+
+    Key design: burst 2 has 3 failures (vs 2 for bursty_recovery), which is enough
+    to push RNOS's retry_score + failure_score past the DEGRADE threshold when combined
+    with the structural floor (cost_score + repeated_tool).  The adaptive CB's 3/5=0.60
+    rate check uses strict '>' so it does NOT trip at the same point.
+    """
+    schedule = [
+        {"success": True},  {"success": True},                              # 1-2 stable
+        {"success": False}, {"success": False}, {"success": False},         # 3-5 burst 1
+        {"success": True},  {"success": True},                              # 6-7 recovery 1 (dirty)
+        {"success": False}, {"success": False}, {"success": False},         # 8-10 burst 2
+        {"success": True},  {"success": True},  {"success": True},          # 11-13 recovery 2 (deceptive)
+        {"success": False}, {"success": False}, {"success": False},         # 14-16 burst 3
+    ]
+    latency = [
+        80.0, 80.0,                  # 1-2
+        400.0, 400.0, 400.0,         # 3-5 burst 1
+        280.0, 280.0,                # 6-7 recovery 1 (elevated, dirty)
+        430.0, 430.0, 430.0,         # 8-10 burst 2
+        300.0, 300.0, 300.0,         # 11-13 recovery 2 (elevated, deceptive)
+        460.0, 460.0, 460.0,         # 14-16 burst 3
+    ] + [480.0] * 4                  # 17-20 absorbing regime
+    cost = (
+        [0.010, 0.010]               # 1-2
+        + [0.025] * 3                # 3-5 burst 1
+        + [0.020, 0.020]             # 6-7 recovery 1
+        + [0.030] * 3                # 8-10 burst 2
+        + [0.025] * 3                # 11-13 recovery 2
+        + [0.035] * 3                # 14-16 burst 3
+        + [0.040] * 4                # 17-20
+    )
+    burst_segments: list[dict[str, Any]] = [
+        {"burst_index": 0, "start_step":  1, "end_step":  2, "segment_type": "stable"},
+        {"burst_index": 1, "start_step":  3, "end_step":  5, "segment_type": "burst"},
+        {"burst_index": 1, "start_step":  6, "end_step":  7, "segment_type": "recovery"},
+        {"burst_index": 2, "start_step":  8, "end_step": 10, "segment_type": "burst"},
+        {"burst_index": 2, "start_step": 11, "end_step": 13, "segment_type": "recovery"},
+        {"burst_index": 3, "start_step": 14, "end_step": 20, "segment_type": "burst"},
+    ]
+    api = ConfigurableAPI(
+        name="intermittent_cascade",
+        step_schedule=schedule,
+        fail_probs=[1.0],            # steps 17+: certain failure
+        latency_profile=latency,
+        cost_profile=cost,
+        seed=seed,
+    )
+    return api, burst_segments
+
+
 def make_matched_recovery(seed: int = 42) -> ConfigurableAPI:
     """Matched pair (recovery branch): identical to make_matched_collapse through step 6.
 
