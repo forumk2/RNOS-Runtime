@@ -12,7 +12,11 @@ In dry-run testing with seed=4 and 20 max steps, RNOS reduced tool failures by 9
 
 ## Experimental Results
 
-Three experiments test RNOS's ability to discriminate between recoverable instability and structural failure across progressively harder scenarios. The core claim is not that RNOS catches more failures than a circuit breaker — it is that RNOS uses a composite signal that accumulates across execution history rather than a windowed rate, and that this difference affects detection timing under bursty, recurring failure patterns.
+### 1. Overview
+
+These experiments test RNOS across four progressively harder discrimination tasks: baseline containment, evidence-driven timing, cross-burst memory, and distributed instability. The goal is to characterize where entropy-based control works, where it fails, and what the failure boundary looks like mechanically.
+
+RNOS uses a cumulative entropy score that captures retry depth, recent failure density, structural cost, and latency. The adaptive circuit breaker (CB) uses a sliding failure-rate window with a strict threshold. These are complementary detection architectures: entropy accumulates state across time; the sliding window measures local density within a fixed horizon. Experiments 2 and 3 favor RNOS; Experiment 4 favors CB.
 
 Each experiment runs three strategies against the same scenarios:
 
@@ -20,39 +24,36 @@ Each experiment runs three strategies against the same scenarios:
 - **Adaptive circuit breaker** — sliding-window failure-rate breaker with exponential backoff and adaptive threshold
 - **Baseline** — unprotected execution
 
-### Summary
-
-| Experiment | Scenarios | RNOS selectivity | CB selectivity | Baseline selectivity | Key finding |
+| Experiment | Scenario Type | RNOS Selectivity | CB Selectivity | Baseline Selectivity | Key Finding |
 |---|---|---|---|---|---|
-| 2: Selective Containment | 4 (3 scored) | 3/3 | 3/3 | 2/3 | Both strategies match; baseline cannot discriminate |
-| 2.5: Matched-Entropy Discrimination | 4 | 4/4 | 4/4 | 2/4 | Correct discrimination at step 8, one step after scenarios diverge |
-| 3: Intermittent Cascading Failure | 4 | 4/4 | 4/4 | 2/4 | RNOS detects 7 steps earlier via cumulative floor; CB forgives recovery windows |
+| 2 — Selective Containment | Cascade vs recoverable instability | 3/3 | 3/3 | 2/3 | Both strategies match; baseline cannot discriminate |
+| 2.5 — Matched-Entropy Discrimination | Identical-state divergence | 4/4 | 4/4 | 2/4 | RNOS withholds judgment until signal is observable |
+| 3 — Intermittent Cascading Failure | Bursty failure with deceptive recovery | 4/4 | 4/4 | 2/4 | RNOS detects 7 steps earlier via cumulative entropy |
+| 4 — Distributed Instability | Smoldering, diffuse failure | **3/4** | **4/4** | 2/4 | CB detects what RNOS misses; entropy ceiling exposed |
 
 ---
 
-### Selective Containment (Experiment 2)
+### 2. Selective Containment (Experiment 2)
 
-Four scenarios with clear ground-truth labels: `transient_blip` and `rough_patch` (recoverable), `runaway_cascade` (structural failure), and `slow_burn` (excluded as borderline). RNOS and the adaptive CB both achieve 3/3 selectivity; the baseline achieves 2/3 by correctly handling recoverable cases but running without limit on the cascade.
+RNOS correctly contains a runaway cascade while allowing recoverable instability to complete. This establishes the minimum requirement for a useful control policy: selectivity over blunt intervention.
 
-On `runaway_cascade`, RNOS issues REFUSE at step 7, resulting in 3 wasted steps (steps executed in the absorbing failure regime). The baseline runs all 20 steps, producing 16 wasted steps.
+Phase transition sweep (varying failure length):
 
-A phase-transition sweep varies `rough_patch` failure length from 1 to 10, holding all other parameters fixed. The result is a clean two-step transition:
-
-| Failure length | RNOS behavior |
+| Failure run length | RNOS decision |
 |---|---|
 | 1–3 | No intervention |
-| 4 | DEGRADE at step 7 |
-| 5+ | REFUSE at step 7 |
+| 4 | DEGRADE |
+| 5+ | REFUSE |
 
-The CB triggers at the same step for length 4+, but ends in `max_steps_exhausted` rather than clean refusal. The behavioral difference is in termination style, not intervention step.
+The transition is clean and two-step. RNOS refuses the runaway cascade at step 7 (3 wasted steps). The baseline exhausts all 20 steps (16 wasted steps). Selectivity: RNOS 3/3, CB 3/3, Baseline 2/3.
 
 ---
 
-### Matched-Entropy Discrimination (Experiment 2.5)
+### 3. Evidence-Driven Behavior (Experiment 2.5)
 
-This experiment removes the entropy-magnitude advantage. Two scenarios — `matched_recovery` and `matched_collapse` — are constructed with identical failure schedules through step 6. The step-6 entropy assertion is verified empirically: both scenarios produce entropy 7.000 at step 6, with an absolute difference of 0.0.
+Two scenarios — `matched_recovery` and `matched_collapse` — were constructed with identical failure schedules through step 6. The step-6 entropy assertion is verified empirically: both scenarios produce entropy 7.000 at step 6, absolute difference 0.0.
 
-At step 7, entropy is still identical for both scenarios (8.950). RNOS issues ALLOW for both. This is the correct behavior: withholding judgment when the evidence is genuinely ambiguous is not a limitation, it is the expected result of a policy that responds to observable signal rather than speculation.
+At step 7, entropy is still identical for both scenarios (8.950). RNOS issues ALLOW for both. This is correct: withholding judgment when the evidence is genuinely ambiguous is not a limitation, it is the expected result of a policy that responds to observable signal rather than speculation. The assertion methodology proves the scenarios were identical when RNOS withheld judgment.
 
 Discrimination occurs at step 8, one step after the scenarios diverge in their actual outcomes:
 
@@ -61,27 +62,27 @@ Discrimination occurs at step 8, one step after the scenarios diverge in their a
 | matched_recovery | 6.125 | ALLOW |
 | matched_collapse | 10.810 | DEGRADE |
 
-At step 9, `matched_collapse` reaches entropy 11.225 and RNOS issues REFUSE. RNOS 4/4, adaptive CB 4/4, baseline 2/4.
+At step 9, `matched_collapse` reaches entropy 11.225 and RNOS issues REFUSE. Selectivity: RNOS 4/4, CB 4/4, Baseline 2/4.
 
-The mechanism here is delayed magnitude discrimination. Once the post-divergence outcome is visible, the entropy gap opens by 4.685 in a single step. RNOS does not infer the future trajectory — it responds to the observed signal as soon as it is informative.
+The mechanism is delayed magnitude discrimination. Once the post-divergence outcome is visible, the entropy gap opens by 4.685 in a single step. RNOS does not infer future trajectory — it responds to the observed signal as soon as it is informative.
 
 ---
 
-### Intermittent Cascading Failure (Experiment 3)
+### 4. Intermittent Cascading Failure (Experiment 3)
 
-This is the most structurally complex experiment. The two primary scenarios share the same burst-and-recovery surface pattern but differ in whether recovery is genuine.
+This is RNOS's strongest result. The two primary scenarios share the same burst-and-recovery surface pattern but differ in whether recovery is genuine.
 
-**`bursty_recovery`**: two short failure bursts (3 failures, then 2 failures) separated by a recovery window, followed by sustained success. Ground truth: recoverable.
+**`bursty_recovery`**: two short failure bursts separated by a recovery window, followed by sustained success. Ground truth: recoverable.
 
-**`intermittent_cascade`**: three failure bursts (3 failures each) with dirty recovery windows between them. Recovery windows have persistently elevated latency. The third burst arrives at step 14, after a deceptively long 3-step recovery window (steps 11–13). Ground truth: structural failure.
+**`intermittent_cascade`**: three failure bursts with dirty recovery windows between them. Recovery windows have persistently elevated latency. The third burst arrives at step 14, after a deceptively long 3-step recovery window. Ground truth: structural failure.
 
-Both strategies produce correct final decisions on all four scenarios (4/4). The difference is in when and how they detect the cascade.
+Both strategies produce correct final decisions on all four scenarios (4/4). The difference is detection timing.
 
 #### Step 11 divergence
 
-At step 11 — the first step of recovery window 2, immediately after burst 2's third consecutive failure — RNOS and the adaptive CB make different decisions for the first time.
+At step 11 — immediately after burst 2's third consecutive failure — RNOS and the adaptive CB make different decisions for the first time.
 
-RNOS entropy composition at step 11 evaluation:
+RNOS entropy composition at step 11:
 
 | Component | Value |
 |---|---|
@@ -90,61 +91,87 @@ RNOS entropy composition at step 11 evaluation:
 | repeated_tool | 2.0 |
 | failure_score (3 failures in last 5) | 1.95 |
 | latency_score (430 ms) | 0.215 |
-| **Total entropy** | **9.165** |
+| **Total entropy** | **9.165 → DEGRADE** |
 
-Result: DEGRADE (threshold 9.0).
+Adaptive CB at step 11: window [S,S,F,F,F] = 3/5 = 0.60. The CB uses a strict `>` check — 0.60 does not exceed 0.60. Result: ALLOW.
 
-Adaptive CB at step 11: window = [S, S, F, F, F] = 3/5 = 0.60. The CB uses a strict `>` check. 0.60 does not exceed 0.60. Result: ALLOW.
-
-The CB issues its first intervention at step 18, when burst 3 has accumulated four consecutive failures and the window reaches [S, F, F, F, F] = 0.80 > 0.60. RNOS's first DEGRADE precedes the CB's first action by 7 steps.
+The CB issues its first intervention at step 18, when the window reaches 0.80 > 0.60. RNOS's first DEGRADE precedes the CB's first action by 7 steps.
 
 #### Cross-burst memory
 
-The RNOS structural floor — `cost_score` (2.0) + `repeated_tool` (2.0) = 4.0 — is the source of the timing difference. `cost_score` is computed as `min(cumulative_calls * 0.3, 2.0)`. It reaches its cap at 7 executed steps and remains at 2.0 through all subsequent recovery windows. It does not reset on success.
+The RNOS structural floor — `cost_score` (2.0) + `repeated_tool` (2.0) = 4.0 — is the source of the timing difference. `cost_score` reaches its cap at 7 executed steps and does not reset on success. By step 11, before any failure-specific signal is added, the entropy baseline is already 4.0. The same 3-consecutive-failure burst in a fresh run would produce entropy of approximately 3.64 — well below the DEGRADE threshold.
 
-This means that by step 11, before a single failure-specific signal is added, the entropy baseline is already 4.0. A burst of 3 consecutive failures then contributes `retry_score` (3.0) and `failure_score` (1.95), pushing entropy to 9.165. The same 3-consecutive-failure burst in a fresh run with no prior execution history would produce entropy of approximately 3.64 — well below the DEGRADE threshold.
-
-The CB has no equivalent. Its sliding window discards history older than 5 steps. The CB window at step 13 (end of recovery window 2) is [F, F, F, S, S] = 0.40 — it has largely forgotten burst 1 and partially forgotten burst 2. RNOS at the same step shows entropy 6.1, still elevated, with the cost_score floor intact.
+The CB has no equivalent. Its sliding window discards history older than 5 steps. The CB window at step 13 (end of recovery window 2) is [F,F,F,S,S] = 0.40 — burst 1 is gone, burst 2 is fading. RNOS at the same step shows entropy 6.1, still elevated, with the cost_score floor intact.
 
 #### Behavior on bursty_recovery
 
-RNOS peak entropy on `bursty_recovery` is 8.650 at step 6 (burst 1 end). This is 0.35 below the DEGRADE threshold. RNOS issues no intervention and the task completes in 20 steps. The CB similarly issues no intervention (peak window rate 0.60 at multiple steps, never exceeding strict threshold).
+RNOS peak entropy on `bursty_recovery` is 8.650, which is 0.35 below the DEGRADE threshold. RNOS issues no intervention and the task completes in 20 steps. The CB similarly issues no intervention. The 0.35 margin separating the two scenarios reflects the burst length difference: `bursty_recovery` has 2 failures in burst 2, `intermittent_cascade` has 3 — a one-failure difference that shifts combined retry and failure scores by 1.65 on top of the 4.0 structural floor.
 
-The 0.35 margin between `bursty_recovery`'s peak (8.650) and `intermittent_cascade`'s burst-2 peak (9.165) reflects the burst length difference: `bursty_recovery` has 2 failures in burst 2, `intermittent_cascade` has 3. That difference of one failure shifts the retry_score by 1.0 and the failure_score by 0.65, a combined 1.65 change on top of the 4.0 structural floor.
+---
 
-#### Summary of behavioral difference
+### 5. Distributed Instability (Experiment 4)
 
-| Property | RNOS | Adaptive CB |
+This is the most important section for an honest account of RNOS's limitations.
+
+`smoldering_instability` maintains a 30–40% failure rate across 20 steps with no consecutive run exceeding 2 failures. `noisy_recovery` has an identical failure schedule through step 10 and then genuinely stabilizes. The entropy-band assertion confirms the scenarios are indistinguishable through the noisy phase:
+
+- noisy_recovery max entropy (steps 3–10): 7.11
+- smoldering max entropy (steps 3–10): 7.11
+- diff: 0.0
+
+**RNOS result:** No intervention on `smoldering_instability`. Peak entropy: 8.805. DEGRADE threshold: 9.0. Miss gap: 0.195 units.
+
+This is not a threshold calibration issue — it is structural. Under a ≤2 consecutive failure constraint, the maximum reachable entropy is bounded:
+
+| Component | Max value | Reason |
 |---|---|---|
-| First action on intermittent_cascade | Step 11 (DEGRADE, temporary caution) | Step 18 (OPEN, hard block) |
-| Mechanism | Composite signal accumulation | Sliding-window failure rate |
-| Cross-burst memory | Persistent via cost_score floor | None — window discards history |
-| Behavior at recovery windows | Entropy remains elevated (6.1 at step 13) | Rate drops to 0.40 at step 13 |
-| Response on bursty_recovery | No intervention (peak 8.650, below threshold) | No intervention |
+| retry_score | 2.0 | consecutive failures capped at 2 |
+| failure_score | 2.6 | at most 4/5 recent failures |
+| structural floor | 4.0 | cost_score + repeated_tool, always present |
+| latency_score | ~0.2 | 410ms prev-step latency |
+| **Ceiling** | **~8.8** | |
+
+RNOS cannot reach the 9.0 DEGRADE threshold when consecutive failures are limited to 2, regardless of how long the instability persists.
+
+**CB result:** Detects `smoldering_instability` at step 18. The FFSFF pattern in steps 13–17 fills the sliding window with 4/5 = 0.80, exceeding the 0.60 threshold. CB accumulates failure density within its window without regard for whether failures are consecutive — the structural property RNOS's retry-based scoring cannot replicate.
+
+**Persistence metrics** were logged observationally and are not part of the RNOS entropy computation:
+
+| Metric | noisy_recovery | smoldering_instability |
+|---|---|---|
+| stability_score (final) | 9 | 0 |
+| chronic_instability_flag | 0 | 1 |
+| above_floor_count (final) | 9 | 14 |
+| rolling_failure_rate_10 (final) | 0.1 | 0.4 |
+| avg_latency_last_5 | 80ms | 282ms |
+
+These signals cleanly separate the two scenarios. `stability_score` diverges by step 15; `chronic_instability_flag` activates unambiguously on smoldering after step 10 and never activates on noisy_recovery. The discrimination signal exists in the data. The current entropy formula does not capture it.
 
 ---
 
-### Key Takeaways
+### 6. Key Takeaways
 
-- RNOS and the adaptive CB produce identical selectivity scores across all three experiments. The difference is not in whether they get the right answer, but in how and when they get it.
-- RNOS detects structural instability earlier when entropy accumulates across burst boundaries. The mechanism is not a separate memory structure — it is the monotonically increasing `cost_score` acting as a passive execution budget.
-- The adaptive CB forgives recovery windows. A 3-step recovery between burst 2 and burst 3 is enough to reduce the CB's window rate from 0.60 to 0.40, substantially reducing its sensitivity to the next burst.
-- RNOS does not over-trigger on genuinely recoverable burst patterns. `bursty_recovery` stays 0.35 below the DEGRADE threshold throughout.
-- In all experiments, RNOS correctly withholds judgment when evidence is ambiguous (Experiment 2.5, step 7) and acts when evidence is sufficient. This is the same behavior a well-calibrated circuit breaker exhibits, expressed through a different signal composition.
+- RNOS and CB have complementary detection profiles. Framing them as competitors misrepresents the results.
+- RNOS detects structured cascading failure earlier: 7-step advantage on `intermittent_cascade` (Experiment 3), explained by cumulative entropy preserving cross-burst state that CB's sliding window discards.
+- CB detects distributed failure density better: CB catches `smoldering_instability` at step 18; RNOS does not catch it at any step (Experiment 4).
+- RNOS has a structural blind spot when consecutive failure streaks are capped at ≤2. The retry-based component of entropy cannot rise high enough to trigger DEGRADE under that constraint, regardless of sustained failure rate.
+- The persistence signals logged in Experiment 4 (stability_score, chronic_instability_flag, above_floor_count) clearly separate the scenarios RNOS cannot distinguish. These are observational only and are not currently modeled in the entropy formula.
 
 ---
 
-### Limitations
+### 7. Limitations
 
-**RNOS is not predictive.** Experiment 2.5 confirms this directly: RNOS cannot act at step 7 when scenarios are entropy-matched, and correctly does not. Detection requires observable divergence in the actual execution trace. Systems that fail silently or whose divergence is delayed past the entropy observation window will not be detected earlier than a breaker.
+**RNOS is not predictive.** Experiment 2.5 confirms this directly: RNOS cannot act at step 7 when scenarios are entropy-matched, and correctly does not. Detection requires observable divergence in the actual execution trace.
 
-**Detection timing depends on threshold calibration.** The DEGRADE threshold (9.0) and REFUSE threshold (11.0) used in these experiments are hand-tuned to account for the structural floor produced by `repeated_tool` and `cost_score` in the specific scenario structure. Different execution patterns, tool diversities, or latency profiles would shift these thresholds. The current results do not generalize directly to uncalibrated configurations.
+**Threshold calibration dependency.** The 0.195 entropy gap between RNOS's peak (8.805) and the DEGRADE threshold (9.0) in Experiment 4 quantifies an architectural boundary. Closing this gap by lowering the threshold risks false positives on `noisy_recovery`, which reaches 7.11 in the noisy phase. The threshold cannot be adjusted without introducing a new tradeoff.
 
-**The adaptive CB is a single baseline.** A more sophisticated multi-signal breaker that also tracks consecutive failure count and cumulative execution cost alongside windowed failure rate might narrow or close the 7-step detection gap observed in Experiment 3. The comparison in this paper is specifically between RNOS and a sliding-window rate threshold — not between RNOS and the space of all possible circuit breaker designs.
+**No persistence modeling.** RNOS does not incorporate signals for sustained failure rate, stability streaks, or time-above-floor. Experiment 4 demonstrates that these signals are sufficient to separate the two distributed scenarios; the current entropy composition is not.
 
-**All scenarios use deterministic synthetic schedules.** Real-world failure modes are stochastic, often correlated, and may involve transient partial recoveries that produce mixed signals. Behavior on real system traces may differ from what is observed here.
+**Evaluated on synthetic deterministic schedules.** All scenarios use fixed failure schedules without stochastic variation. Results may not generalize to real workloads where failure timing, latency distributions, and recovery patterns are non-deterministic.
 
-**Entropy composition weights are not optimized.** The weights used (`retry: 1.0`, `failure: 0.65`, `latency: 0.5`, `cost: 0.3`) were set by hand and have not been tuned against a validation set. The relative contribution of each signal to discrimination outcomes could shift under different weight assignments.
+**CB is a strong baseline, not a strawman.** The adaptive circuit breaker matches RNOS selectivity on three of four experiments and outperforms it on the fourth. Results should be interpreted as a characterization of detection profiles, not a demonstration of RNOS superiority.
+
+**Entropy weights are hand-tuned.** Component coefficients and caps were set by design, not by optimization. Different weight assignments would produce different detection boundaries.
 
 ---
 
