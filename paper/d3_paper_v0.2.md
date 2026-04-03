@@ -9,7 +9,7 @@
 
 ## Abstract
 
-Modern execution systems fail by continuing: they permit operation under degraded conditions, compounding instability through retries, recursive expansion, and effect commitment until the system enters a state from which recovery is no longer possible. D3 (Deterministic Degradable Distributed) addresses this structurally by treating correctness as a consumable resource. Each operation is evaluated against an entropy budget before execution; trust — a composite of confidence, integrity, and environmental stability — gates continuation. When admissibility fails, the system issues a structured refusal, an integrity-preserving terminal state that halts further execution rather than permitting silent degradation. We present the D3 formal kernel specification, an instruction set that exposes entropy and trust as architecturally visible state, and a five-layer execution stack that connects mission-level policy to fault containment. Two reference implementations — RNOS-2.0 and RNOS-Runtime — instantiate key aspects of the architecture in software and provide empirical validation across containment, discrimination, and adversarial regimes. At fanout-16, RNOS limits cascade growth to 65 contexts against 69,905 unprotected (1,075×); under composed failure, early containment is achieved consistently across six seeds with average entropy savings of 54%. Adversarial evaluation reveals that greedy per-unit admissibility cannot detect instability distributed across individually-benign operations, a boundary confirmed independently in two experimental regimes. Entropy weights are hand-tuned; all experiments use synthetic deterministic workloads; the ISA and hardware layer are not yet implemented.
+Modern execution systems fail by continuing: they permit operation under degraded conditions, compounding instability through retries, recursive expansion, and effect commitment until the system enters a state from which recovery is no longer possible. D3 (Deterministic Degradable Distributed) addresses this structurally by treating correctness as a consumable resource. Each operation is evaluated against an entropy budget before execution; trust — a composite of confidence, integrity, and environmental stability — gates continuation. When admissibility fails, the system issues a structured refusal, an integrity-preserving terminal state that halts further execution rather than permitting silent degradation. We present the D3 formal kernel specification, an instruction set that exposes entropy and trust as architecturally visible state, and a five-layer execution stack that connects mission-level policy to fault containment. Two reference implementations — RNOS-2.0 and RNOS-Runtime — instantiate key aspects of the architecture in software and provide empirical validation across containment, discrimination, and adversarial regimes. At fanout-16, RNOS limits cascade growth to 65 contexts against 69,905 unprotected (1,075×); under composed failure, early containment is achieved consistently across six seeds with average entropy savings of 54%. Adversarial evaluation reveals that greedy per-unit admissibility cannot detect instability distributed across individually-benign operations, a boundary confirmed independently in two experimental regimes. A cooperative control experiment demonstrates that composing RNOS with an adaptive circuit breaker under a safety-first merge matches or improves upon the better single-policy controller across both cascading and distributed failure geometries, providing initial evidence that composed admissibility observers over distinct instability signals can address the identified detection gaps. Entropy weights are hand-tuned; all experiments use synthetic deterministic workloads; the ISA and hardware layer are not yet implemented.
 
 ---
 
@@ -23,7 +23,7 @@ This paper introduces D3 (Deterministic Degradable Distributed), a compute archi
 
 D3 is not a runtime optimization or a single system implementation. It is an architectural model spanning a formal kernel specification, an instruction set exposing entropy and trust as first-class state, and a scheduling framework that conditions execution on system integrity. This paper presents two reference implementations—RNOS-2.0 and RNOS-Runtime—that instantiate key aspects of the architecture in software, enabling empirical evaluation of its behavior under controlled conditions.
 
-The experimental results demonstrate three primary properties. First, D3 enforces bounded execution under composition, limiting cascade growth by constraining execution at the point of admissibility. Second, it achieves selective containment, distinguishing between recoverable and non-recoverable execution trajectories without premature intervention. Third, adversarial evaluation reveals clear architectural boundaries: specifically, that greedy per-unit admissibility cannot detect instability distributed across individually-benign units. These boundaries are quantified and shown to arise from the structure of the admissibility formulation rather than implementation error.
+The experimental results demonstrate three primary properties. First, D3 enforces bounded execution under composition, limiting cascade growth by constraining execution at the point of admissibility. Second, it achieves selective containment, distinguishing between recoverable and non-recoverable execution trajectories without premature intervention. Third, adversarial evaluation reveals clear architectural boundaries: specifically, that greedy per-unit admissibility cannot detect instability distributed across individually-benign units. These boundaries are quantified and shown to arise from the structure of the admissibility formulation rather than implementation error. A follow-on cooperative control experiment demonstrates that composing RNOS with a complementary detection primitive — an adaptive circuit breaker with sliding-window failure density — produces a controller that matches or improves upon either component across both cascading and distributed failure geometries, pointing toward composed admissibility observers as a direction for addressing the identified structural gaps.
 
 The contribution of this paper is not to claim a complete solution to execution under uncertainty, but to define a coherent architectural approach, validate it empirically, and identify its limits precisely. D3 establishes a foundation for treating correctness as a schedulable resource and refusal as a first-class primitive in execution systems.
 
@@ -234,7 +234,7 @@ RNOS-2.0 and RNOS-Runtime implement a software subset of the D3 kernel specifica
 
 The ISA primitives (Section 2.7) have no hardware implementation. RNOS validates the semantic model: EBIND corresponds to `EntropyBudget` initialization; TGATE corresponds to `ExecutionGate.evaluate()`; QEMIT corresponds to the structured `RunResult` output. The ISA articulates what these mechanisms should look like in an instruction-set-visible form; the software demonstrates that the semantic model produces correct behavior.
 
-The Terafab D3 hardware program (Section 5.5) provides physical-layer survival mechanisms — radiation hardening, TMR on critical paths, ECC/EDAC on all memory structures, and continuous scrubbing. D3/RNOS provides the semantic execution layer: governing whether and how computation proceeds once physical errors have been detected and corrected. The two layers are complementary; neither substitutes for the other. Radiation hardening prevents bit flips; RNOS prevents continued execution under conditions where bit flips, retry storms, and cascading effects have compromised the integrity of the execution context.
+The Terafab D3 hardware program (Section 5.6) provides physical-layer survival mechanisms — radiation hardening, TMR on critical paths, ECC/EDAC on all memory structures, and continuous scrubbing. D3/RNOS provides the semantic execution layer: governing whether and how computation proceeds once physical errors have been detected and corrected. The two layers are complementary; neither substitutes for the other. Radiation hardening prevents bit flips; RNOS prevents continued execution under conditions where bit flips, retry storms, and cascading effects have compromised the integrity of the execution context.
 
 ---
 
@@ -289,6 +289,7 @@ Four experiments test selective containment: the ability to distinguish recovera
 | 2.5 — Matched-Entropy | Identical-state divergence | 4/4 | 4/4 | 2/4 | Correct non-intervention when evidence absent |
 | 3 — Intermittent Cascade | Bursty failure with deceptive recovery | 4/4 | 4/4 | 2/4 | RNOS detects 7 steps earlier |
 | 4 — Distributed Instability | Diffuse, non-consecutive failure | **3/4** | **4/4** | 2/4 | CB detects what RNOS misses |
+| 5 — Cooperative Control | Cascading burst + distributed density | 7 / 30 exec | 10 / 10 exec | 30 / 30 exec | Hybrid matches best component in both regimes; trigger_source identifies governing signal per step (see Section 5.3) |
 
 **Experiment 2** establishes the minimum criterion: selectivity over blunt intervention. The phase transition (failure lengths 1–3: ALLOW; 4: DEGRADE; 5+: REFUSE) is clean and two-step. RNOS refuses the runaway cascade at step 7 (3 wasted steps); the baseline exhausts all 20 steps (16 wasted).
 
@@ -381,6 +382,7 @@ The failure mode is structurally identical in both cases: a local affordability 
 | Matched-Entropy | RNOS-Runtime, Exp 2.5 | 4/4 selectivity | 4/4 | 2/4 | Correct non-intervention under ambiguity |
 | Intermittent Cascade | RNOS-Runtime, Exp 3 | 4/4 (−7 steps vs CB) | 4/4 | 2/4 | Cross-burst memory advantage |
 | Distributed Instability | RNOS-Runtime, Exp 4 | **3/4** | **4/4** | 2/4 | CB detects diffuse failure; RNOS cannot |
+| Cooperative Control | RNOS-Runtime, Exp 5 | 7 exec (cascading) / 30 (distributed) | 10 / 10 exec | 30 / 30 exec | Hybrid = best(RNOS, CB) both regimes; trigger transparent |
 | Composite Cascade | RNOS-2.0, experiments | Early (6/6 seeds) | — | — | 54% avg savings, 3.25–11.11× amplification |
 | Budget Fragmentation | RNOS-2.0, adversarial | 8.8% savings (mid) | — | — | 96% pre-refusal execution |
 | Delayed Amplification | RNOS-2.0, adversarial | 0% savings (2/6 seeds) | — | — | Complete bypass at fanout=2 |
@@ -407,7 +409,44 @@ RNOS and the adaptive CB have different architectural foundations that produce c
 
 Neither approach dominates. A system combining both — cumulative cross-run memory for structured cascades, sliding-window density for diffuse distributed failure — would likely cover the identified gaps. The current RNOS implementations contain no equivalent of the CB's density accumulation, and the CB contains no equivalent of the RNOS structural floor.
 
-### 5.3 Architectural Boundaries
+### 5.3 Cooperative Control Architectures
+
+Section 5.2 establishes that RNOS and the adaptive CB have structurally complementary detection profiles: cumulative execution history advantages RNOS on intermittent cascades; failure density accumulation independent of consecutiveness advantages the CB on distributed instability. The natural question is whether this complementarity is merely diagnostic — a description of two detection regimes operating in parallel — or whether it can be operationalized into a composed architecture that inherits the advantages of both without regressing on either.
+
+To test this, a hybrid controller was constructed by composing RNOS and the adaptive CB under a safety-first merge: both sub-systems evaluate each step independently; the more-severe decision governs the control output. Severity is defined by decision level — ALLOW at 0, DEGRADE at 1, REFUSE at 2 — with the CB's state mapped to the equivalent level (CLOSED/ALLOW; HALF_OPEN/DEGRADE; OPEN or PERMANENTLY_OPEN/REFUSE). A `trigger_source` field records which sub-system produced the governing decision at each step, making the contributing signal observable at per-step resolution rather than opaque at the controller level.
+
+Two failure scenarios were evaluated:
+
+**`cascading_burst`** presents rapid consecutive failures beginning at step 3, escalating into an absorbing failure regime. RNOS's `retry_score` — 1.0 per consecutive failure, cap 4.0 — accumulates quickly under this pattern. Combined with the structural floor (cost\_score + repeated\_tool = 4.0, non-resetting), the accumulated entropy score crosses the DEGRADE threshold (9.0) at step 7 before the CB's 10-step sliding window has accumulated sufficient observations to evaluate. RNOS is the governing sub-system; `trigger_source = "rnos"` at the first intervention.
+
+**`distributed_low_rate`** presents a repeating F-F-S pattern (67% failure rate, consecutive failures capped at 2). Each success resets `retry_count`, bounding `retry_score` at 2.0. Failure score over the most recent five steps reaches at most 3/5 × 0.65 × 3 = 1.95. Total accumulated entropy — retry 2.0 + failure 1.95 + floor 4.0 + latency ~0.1 — peaks at approximately 8.7, below the DEGRADE threshold of 9.0. RNOS does not intervene at any step within the 30-step evaluation window. The CB's sliding window fills after 10 executions with 7/10 = 0.70 > 0.60, triggering intervention at step 11. The CB is the governing sub-system; `trigger_source = "cb"` at the first intervention.
+
+**Table: tool executions before termination (30-step maximum)**
+
+| Scenario | Baseline | RNOS | CB | Hybrid | Governing sub-system |
+|---|---|---|---|---|---|
+| `cascading_burst` | 30 | 7 | 10 | **7** | RNOS |
+| `distributed_low_rate` | 30 | 30 | 10 | **10** | CB |
+
+In both scenarios, the hybrid controller matches the better-performing single-policy controller exactly and strictly improves upon the weaker one. On `cascading_burst`, hybrid reduces executions to 7 against the CB's 10; on `distributed_low_rate`, hybrid reduces executions to 10 against RNOS's 30. The safety-first merge routes authority to the sub-system with the relevant detection capability in each regime without requiring cross-sub-system coordination.
+
+Three properties of this result merit attention.
+
+First, the bound is structural. The safety-first merge guarantees that hybrid performance cannot be worse than the better-performing component in any scenario where at least one component intervenes. This is not a tuning outcome; it follows from the severity ordering. The two scenarios above are proof-of-concept, not an exhaustive evaluation. Whether this bound holds across adversarial, compositional, or stochastic failure regimes requires further testing.
+
+Second, the mechanism is transparent. The `trigger_source` field provides a per-step record of which detection primitive governs each decision. A composed controller that cannot identify which of its components is responsible for a given refusal has traded the interpretability of each component for combined coverage. The per-step trigger record preserves both. In the language of D3 mode control: the hybrid does not replace the mode signal — it augments it with a provenance tag.
+
+Third, the composition imposes no regression. Hybrid performance on `cascading_burst` is identical to RNOS-alone (7 executions); hybrid performance on `distributed_low_rate` is identical to CB-alone (10 executions). The safety-first merge does not weaken either sub-system's result on the scenario for which it was the stronger detector.
+
+These results suggest a broader architectural principle for admissibility under uncertainty. A single control primitive defined over one instability geometry — cumulative execution history, local failure density, gradient, or latency — cannot be sufficient across all failure regimes that an execution system may encounter. Different geometries expose different observable signals; different signals require different detection structures. Rather than attempting to subsume all instability into a single composite score, a composed architecture assigns each detection responsibility to the primitive best suited to it and admits execution only when all active observers agree.
+
+In D3 terms, this is an extension of the admissibility condition (Section 2.3). Rather than a single trust function $T$ governing admission, a composed architecture evaluates a set of admissibility observers $\{T_1, T_2, \ldots, T_k\}$, each defined over a distinct instability geometry, and requires:
+
+$$A_t = 1 \iff \min_i\, T_i(\tau_t, s_t) \geq T_{\text{req}}$$
+
+The safety-first merge is the operational realization of this condition: if any observer finds the system inadmissible, execution is refused, and the governing observer is recorded. The current two-component system — RNOS structural memory plus CB failure density — is the simplest instance. Persistence-aware observers, modeling stability streaks and chronic failure rate as identified observationally in Experiment 4, are natural additions within the same framework. The architectural lesson is not that more observers are always better, but that **execution control over diverse failure geometries appears to benefit from composed observers operating over distinct signals, with refusal triggered by the most severe valid assessment available**.
+
+### 5.4 Architectural Boundaries
 
 Three boundaries are empirically identified and measured:
 
@@ -419,13 +458,13 @@ Three boundaries are empirically identified and measured:
 
 Each gap is quantified: 96% pre-refusal execution, 0% savings (complete bypass), containment delayed from step 4 to step 8. These are not threshold-tuning issues. They represent structural properties of the admissibility formulation that require architectural changes — aggregate cost projection, phase-level reservation, committed-effect accounting — to address.
 
-### 5.4 Theory and Implementation
+### 5.5 Theory and Implementation
 
 The kernel specification defines 19 sections of formal semantics. RNOS-2.0 and RNOS-Runtime implement a subset: entropy budgeting, admissibility, mode-based graduated response, effects containment, and trust degradation (RNOS-Runtime). Unimplemented kernel features — full redundancy semantics, validation escalation (VSET/VCMP/VCHK), entropy field integration, the complete ISA — represent architectural extensions rather than current capabilities.
 
 The relationship between theory and implementation is two-directional. The kernel spec provides the formal grounding: trust function axioms, safety guarantee conditions, mode control surface definitions. The implementations provide empirical feedback: the adversarial analysis identifies which architectural properties are exploitable and quantifies the impact, pointing to specific kernel spec sections (per-operation admissibility, absence of inter-context budget reservation, rollback semantics) that require extension. The gaps identified in Section 4.6 correspond to architectural additions, not parameter tuning.
 
-### 5.5 Relationship to Terafab D3 Hardware
+### 5.6 Relationship to Terafab D3 Hardware
 
 The Terafab program — a radiation-hardened processor family targeting orbital AI compute — addresses the physical layer of execution reliability: ECC/EDAC on all memory structures, TMR on critical paths, continuous scrubbing, and junction temperature tolerance for vacuum thermal environments. D3/RNOS addresses the semantic layer: whether execution that has survived physical faults should continue given its current integrity and entropy state.
 
@@ -446,6 +485,8 @@ The proposed ISA extensions bridge the layers: RADMON/RADCHK translate radiation
 **Four attacks are not exhaustive.** The adversarial experiments cover four properties identified by inspection of the architecture. Sandbox-crossing surcharges, depth-dependent cost scaling, descendant count limits, and interactions among multiple attack patterns were not evaluated. Additional vulnerabilities may exist in compositions not examined here.
 
 **Circuit breaker is a single baseline.** The adaptive CB with sliding-window failure rate, exponential backoff, and adaptive threshold is one instantiation of the circuit breaker pattern. Multi-signal breakers combining failure density, latency histograms, error type classification, and saturation metrics might perform differently. The finding that CB outperforms RNOS on Experiment 4 is specific to this configuration.
+
+**The cooperative control experiment evaluates two synthetic scenarios.** The safety-first merge result (Section 5.3) is demonstrated on one cascading-burst scenario and one distributed-density scenario, both using fully deterministic step schedules. Generalization to adversarial, compositional, or stochastic failure regimes, to more than two composed sub-systems, and to scenarios where both sub-systems are simultaneously active has not been tested. The structural bound — hybrid cannot be worse than the better component — holds by construction; whether the empirical performance advantage is robust across a broader scenario space is an open question.
 
 **Persistence signals identified but not implemented.** Experiment 4 identifies five signals that cleanly discriminate `smoldering_instability` from `noisy_recovery` (stability_score 9 vs 0, rolling_failure_rate_10 0.1 vs 0.4, avg_latency_last_5 80ms vs 282ms). These are observed and logged but not currently part of the entropy composition. The discrimination gap is architecturally quantified but not closed.
 
