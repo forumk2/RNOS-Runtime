@@ -196,6 +196,161 @@ def make_slow_burn(seed: int = 42) -> ConfigurableAPI:
     )
 
 
+def make_noisy_recovery(seed: int = 42) -> tuple["ConfigurableAPI", list[dict[str, Any]]]:
+    """Noisy but genuinely recovering scenario.
+
+    Steps 1-10 have diffuse instability (~40% failure rate, <=2 consecutive).
+    Steps 11-14 transition: failure rate falls to ~25%, latency begins normalising.
+    Steps 15-20 stabilise: 6 consecutive clean successes at baseline latency.
+
+    The failure pattern in steps 1-10 is deliberately identical to
+    make_smoldering_instability so the two scenarios are locally indistinguishable
+    during the early phase.
+
+    Constraints:
+      - No more than 2 consecutive failures at any point.
+      - Steps 15-20: all successes, latency < 90 ms (genuine stabilisation).
+
+    Ground truth: benign -- should NOT be permanently intervened on.
+    Temporary DEGRADE is acceptable; REFUSE is incorrect.
+    """
+    schedule = [
+        {"success": True},  {"success": True},                      #  1-2  stable
+        {"success": False}, {"success": False},                     #  3-4  mini-burst 1 (2 consecutive)
+        {"success": True},  {"success": True},                      #  5-6
+        {"success": False},                                         #  7    isolated failure
+        {"success": True},                                          #  8
+        {"success": False},                                         #  9    isolated failure
+        {"success": True},                                          # 10
+        {"success": False},                                         # 11   residual noise
+        {"success": True},  {"success": True},                      # 12-13 transition
+        {"success": True},                                          # 14
+        {"success": True},  {"success": True},  {"success": True},  # 15-17 stabilisation
+        {"success": True},  {"success": True},  {"success": True},  # 18-20
+    ]
+    latency = [
+         80.0,  80.0,                   #  1-2  baseline
+        350.0, 380.0,                   #  3-4  burst
+        120.0, 100.0,                   #  5-6  elevated recovery
+        320.0,                          #  7    failure
+         80.0,                          #  8
+        300.0,                          #  9    failure
+         80.0,                          # 10
+        250.0,                          # 11   residual noise
+        100.0,  90.0,  85.0,            # 12-14 normalising
+         80.0,  80.0,  80.0,            # 15-17 stable
+         80.0,  80.0,  80.0,            # 18-20
+    ]
+    cost = (
+        [0.010] * 2          # 1-2
+        + [0.020] * 2        # 3-4
+        + [0.012] * 2        # 5-6
+        + [0.018]            # 7
+        + [0.010]            # 8
+        + [0.018]            # 9
+        + [0.010] * 11       # 10-20
+    )
+    segments: list[dict[str, Any]] = [
+        {"segment_index": 0, "start_step":  1, "end_step":  2, "segment_type": "stable"},
+        {"segment_index": 1, "start_step":  3, "end_step": 10, "segment_type": "noisy"},
+        {"segment_index": 2, "start_step": 11, "end_step": 14, "segment_type": "transition"},
+        {"segment_index": 3, "start_step": 15, "end_step": 20, "segment_type": "stable"},
+    ]
+    api = ConfigurableAPI(
+        name="noisy_recovery",
+        step_schedule=schedule,
+        fail_probs=[0.0],
+        latency_profile=latency,
+        cost_profile=cost,
+        seed=seed,
+    )
+    return api, segments
+
+
+def make_smoldering_instability(seed: int = 42) -> tuple["ConfigurableAPI", list[dict[str, Any]]]:
+    """Persistent low-grade instability that never stabilises.
+
+    Steps 1-10 are deliberately identical in failure pattern to make_noisy_recovery
+    (4/10 = 40%, <= 2 consecutive), making the two scenarios indistinguishable
+    to a short-horizon observer during the early phase.
+
+    Steps 11-20 continue to fail at ~40% (failures at steps 13, 14, 16, 17).
+    All success steps in 11-20 carry elevated latency (200-230 ms, >= 1.5x baseline),
+    so no clean stabilisation window forms.
+
+    The adversarial design: consecutive failure streaks never exceed 2, which caps
+    RNOS's retry_score at 2.0 and keeps peak entropy just below the DEGRADE
+    threshold (9.0) even at worst-case windows.
+
+    The adaptive CB detects the scenario at step 18 when the window fills with
+    the FFSFF pattern (4/5 = 0.80 > 0.60 strict threshold).
+
+    Constraints:
+      - No more than 2 consecutive failures at any point.
+      - All success steps from step 5 onward have latency >= 140 ms (>= 1.5x baseline),
+        so stability_score never reaches 3 after step 10.
+      - Rolling 5-step failure rate never drops below 0.20 from step 13 onward.
+
+    Ground truth: structural failure -- should eventually be intervened on.
+    """
+    schedule = [
+        {"success": True},  {"success": True},                      #  1-2  stable (mirrors noisy)
+        {"success": False}, {"success": False},                     #  3-4  mini-burst 1 (mirrors noisy)
+        {"success": True},  {"success": True},                      #  5-6  (mirrors noisy)
+        {"success": False},                                         #  7    (mirrors noisy)
+        {"success": True},                                          #  8    (mirrors noisy)
+        {"success": False},                                         #  9    (mirrors noisy)
+        {"success": True},                                          # 10   (mirrors noisy)
+        {"success": True},  {"success": True},                      # 11-12 deceptive clean window
+        {"success": False}, {"success": False},                     # 13-14 mini-burst 2 (2 consecutive)
+        {"success": True},                                          # 15   elevated success
+        {"success": False}, {"success": False},                     # 16-17 mini-burst 3 (2 consecutive)
+        {"success": True},  {"success": True},  {"success": True},  # 18-20 elevated successes
+    ]
+    latency = [
+         80.0,  80.0,                   #  1-2  baseline
+        350.0, 380.0,                   #  3-4  burst (same as noisy)
+        160.0, 140.0,                   #  5-6  elevated (vs 120/100 in noisy)
+        320.0,                          #  7    failure (same as noisy)
+        160.0,                          #  8    elevated (vs 80 in noisy)
+        300.0,                          #  9    failure (same as noisy)
+        150.0,                          # 10   elevated (vs 80 in noisy)
+        220.0, 230.0,                   # 11-12 elevated even on success
+        400.0, 420.0,                   # 13-14 burst 2
+        220.0,                          # 15   elevated
+        390.0, 410.0,                   # 16-17 burst 3
+        200.0, 210.0, 200.0,            # 18-20 elevated successes (no clean recovery)
+    ]
+    cost = (
+        [0.010] * 2          # 1-2
+        + [0.020] * 2        # 3-4
+        + [0.014] * 2        # 5-6
+        + [0.018]            # 7
+        + [0.014]            # 8
+        + [0.018]            # 9
+        + [0.014]            # 10
+        + [0.020] * 2        # 11-12
+        + [0.030] * 2        # 13-14
+        + [0.022]            # 15
+        + [0.028] * 2        # 16-17
+        + [0.020] * 3        # 18-20
+    )
+    segments: list[dict[str, Any]] = [
+        {"segment_index": 0, "start_step":  1, "end_step":  2, "segment_type": "stable"},
+        {"segment_index": 1, "start_step":  3, "end_step": 10, "segment_type": "noisy"},
+        {"segment_index": 2, "start_step": 11, "end_step": 20, "segment_type": "chronic"},
+    ]
+    api = ConfigurableAPI(
+        name="smoldering_instability",
+        step_schedule=schedule,
+        fail_probs=[0.0],
+        latency_profile=latency,
+        cost_profile=cost,
+        seed=seed,
+    )
+    return api, segments
+
+
 def make_bursty_recovery(seed: int = 42) -> tuple["ConfigurableAPI", list[dict[str, Any]]]:
     """Two short failure bursts followed by genuine sustained recovery.
 

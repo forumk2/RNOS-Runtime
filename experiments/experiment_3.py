@@ -334,8 +334,8 @@ def _run_adaptive_cb_3(
         allowed, cb_reason = cb.should_execute()
 
         seg = _get_segment(step, burst_segments)
-        seg_type  = seg["segment_type"] if seg else "unknown"
-        burst_idx = seg["burst_index"]  if seg else None
+        seg_type  = seg["segment_type"]            if seg else "unknown"
+        burst_idx = seg.get("burst_index")         if seg else None
         window_snapshot = list(cb._window)      # CB internal state (for analysis)
 
         if not allowed:
