@@ -111,6 +111,8 @@ This ensures the budget depletes faster under conditions of increasing structura
 
 The finding that heuristic charges preserved correct relative ordering but systematically under-charged expansion operations is consistent with the observation that D3 failure modes are dominated by multiplicative growth rather than additive accumulation.
 
+This calibration result validates a reproducible methodology: set charges by structural reasoning about relative risk ordering, then sweep empirically to confirm or adjust magnitudes. The finding that heuristic values preserved correct relative ordering while uniformly under-charging the load-bearing parameters suggests the methodology produces sound structure even when initial magnitudes are conservative. This is relevant for deployments where the specific workload characteristics differ from the calibration battery but the structural risk ordering is preserved — the ordering can be trusted while magnitudes are re-calibrated against the target workload.
+
 In the RNOS-Runtime (discrimination experiments), entropy is expressed as an accumulated composite score rather than a depleting budget: six weighted signals are summed at each step, and the result is compared against mode thresholds. The two representations are dual: a growing score toward a ceiling is equivalent to a depleting budget toward zero. The structural floor discussed in Section 4.3 (cost_score + repeated_tool = 4.0, non-resetting) is the RNOS-Runtime instantiation of accumulated execution cost that persists independent of recent failure patterns.
 
 ### 2.5 Mode Control
@@ -234,7 +236,7 @@ RNOS-2.0 and RNOS-Runtime implement a software subset of the D3 kernel specifica
 
 The ISA primitives (Section 2.7) have no hardware implementation. RNOS validates the semantic model: EBIND corresponds to `EntropyBudget` initialization; TGATE corresponds to `ExecutionGate.evaluate()`; QEMIT corresponds to the structured `RunResult` output. The ISA articulates what these mechanisms should look like in an instruction-set-visible form; the software demonstrates that the semantic model produces correct behavior.
 
-The Terafab D3 hardware program (Section 5.6) provides physical-layer survival mechanisms — radiation hardening, TMR on critical paths, ECC/EDAC on all memory structures, and continuous scrubbing. D3/RNOS provides the semantic execution layer: governing whether and how computation proceeds once physical errors have been detected and corrected. The two layers are complementary; neither substitutes for the other. Radiation hardening prevents bit flips; RNOS prevents continued execution under conditions where bit flips, retry storms, and cascading effects have compromised the integrity of the execution context.
+The Terafab D3 hardware program (Section 5.6 Future Directions) provides physical-layer survival mechanisms — radiation hardening, TMR on critical paths, ECC/EDAC on all memory structures, and continuous scrubbing. D3/RNOS provides the semantic execution layer: governing whether and how computation proceeds once physical errors have been detected and corrected. The two layers are complementary; neither substitutes for the other. Radiation hardening prevents bit flips; RNOS prevents continued execution under conditions where bit flips, retry storms, and cascading effects have compromised the integrity of the execution context.
 
 ---
 
@@ -403,6 +405,8 @@ The dual-mode taxonomy observed empirically (Section 4.1) maps to two distinct k
 
 State preservation (Section 4.2) adds a dimension to this: refusal is not just containment, it is exit with recoverable state. A system that terminates at $C = 0.4$ is in a different position from one that continues to $C = 0.0$. The former has resources remaining, context that can be examined, and a structured output explaining why execution stopped. The latter has nothing.
 
+The structural pattern of detectable invalid state combined with permissible continuation appears in well-documented real-world failures: reactor accidents where anomalous readings preceded continued operation under known-unstable conditions, and launch disasters where an explicit refusal signal was overridden rather than enforced. In both cases, the failure was not the initial degraded state but the absence of a mechanism that made termination binding once admissibility conditions were violated. These are structural analogies illustrating what the absence of an enforceable refusal primitive produces — they are not technical mappings of D3 variables to reactor physics or component failure modes, and no claim is made that entropy or trust as defined in the D3 kernel spec would have quantitatively characterized those systems. The point is narrower: across domains, the pattern of compounding failure under permissible continuation is structurally recurring, and the D3 refusal primitive is designed to interrupt it at the execution layer.
+
 ### 5.2 Complementary Detection Profiles
 
 RNOS and the adaptive CB have different architectural foundations that produce complementary detection profiles. RNOS's structural floor — cumulative execution cost that persists across recovery windows — provides memory of past instability that the CB's sliding window discards. This gives RNOS a 7-step advantage on `intermittent_cascade`, where burst 1 has faded from the CB's window by the time burst 2 triggers. The CB's advantage on diffuse failure (`smoldering_instability`) arises from its failure density accumulation being independent of consecutiveness — a structural property RNOS's retry-based scoring cannot replicate.
@@ -464,17 +468,19 @@ The kernel specification defines 19 sections of formal semantics. RNOS-2.0 and R
 
 The relationship between theory and implementation is two-directional. The kernel spec provides the formal grounding: trust function axioms, safety guarantee conditions, mode control surface definitions. The implementations provide empirical feedback: the adversarial analysis identifies which architectural properties are exploitable and quantifies the impact, pointing to specific kernel spec sections (per-operation admissibility, absence of inter-context budget reservation, rollback semantics) that require extension. The gaps identified in Section 4.6 correspond to architectural additions, not parameter tuning.
 
-### 5.6 Relationship to Terafab D3 Hardware
+### 5.6 Future Directions
 
-The Terafab program — a radiation-hardened processor family targeting orbital AI compute — addresses the physical layer of execution reliability: ECC/EDAC on all memory structures, TMR on critical paths, continuous scrubbing, and junction temperature tolerance for vacuum thermal environments. D3/RNOS addresses the semantic layer: whether execution that has survived physical faults should continue given its current integrity and entropy state.
+The Terafab program — a radiation-hardened processor family targeting orbital AI compute — operates at the physical fault-correction layer: ECC/EDAC on all memory structures, TMR on critical paths, and continuous scrubbing prevent physical bit errors from propagating silently. D3/RNOS operates at the semantic execution integrity layer: it governs whether execution that has survived physical fault correction should continue given current entropy and trust state. The two layers are complementary — radiation hardening does not prevent retry storms or cascading semantic failures; entropy-bounded execution does not prevent physical bit corruption — and neither substitutes for the other. Proposed ISA bridge instructions (RADMON, THERMCHK, EBUDGET) would translate physical fault signals into entropy budget charges, enabling proactive mode transitions before semantic integrity is compromised, but these instructions are unimplemented proposals and no integration between D3/RNOS and any Terafab hardware has been validated.
 
-The two layers are complementary in a precise sense. Radiation hardening prevents physical bit corruption from propagating silently. RNOS prevents semantic corruption — retry amplification, cascading effects, budget fragmentation — from propagating silently. Neither substitutes for the other. A radiation-hardened processor running an uncontrolled retry storm still fails by continuing; an entropy-bounded runtime running on unhardened silicon still faces silent physical corruption. The complete system requires both.
-
-The proposed ISA extensions bridge the layers: RADMON/RADCHK translate radiation error rates into entropy budget charges, enabling proactive mode transitions before semantic integrity is compromised; THERMCHK adjusts cost thresholds under thermal stress; EBUDGET provides explicit task-level entropy allocation for orbital workload scheduling. These extensions are proposed, not implemented.
+Several open directions follow directly from the experimental results. The persistence signals identified in Experiment 4 — stability streak, rolling failure rate over a longer window, average recent latency — discriminate `smoldering_instability` cleanly but are not yet part of the entropy composition; integrating them would close the 0.195-unit detection gap without requiring threshold changes. Aggregate cost projection across planned sibling contexts, and phase-level budget reservation for known future phases, are architectural additions required to address the fragmentation gap (96% pre-refusal execution in Budget Fragmentation) and the delayed amplification bypass (complete bypass in 2/6 seeds) identified in Section 4.5. Finally, the adaptive CB has not been evaluated against the composite cascade scenario (Section 4.4); testing whether the CB achieves early containment under cross-phase budget depletion would establish whether RNOS's shared-budget mechanism provides an advantage that per-call failure density cannot replicate.
 
 ---
 
 ## 6. Limitations
+
+### 6.1 Initial Budget Sensitivity
+
+The adversarial analysis (Section 4.5) assumes a correctly-sized budget of 50 units in the composite cascade. This assumption is not validated. An over-provisioned budget extends the pre-refusal execution window for all attacks proportionally: Budget Fragmentation's 96% pre-refusal execution and Delayed Amplification's complete bypass in 2/6 seeds both become strictly worse with more headroom, since a larger budget allows more individually-affordable contexts to accumulate before any global signal fires. An under-provisioned budget increases premature refusal on legitimate workloads, rejecting execution at points where continuation is correct. No systematic sensitivity analysis has been conducted across budget sizes; the interaction between budget sizing and the identified structural gaps — aggregate cost projection and phase-level reservation — is an open question, since those gaps are themselves functions of how much headroom remains when the attack phase begins. This should be understood as a limitation of the current evaluation, not as evidence that the 50-unit budget is optimal or representative.
 
 **Synthetic deterministic workloads.** All experiments use fixed failure schedules without stochastic variation. Results characterize behavior on the specific scenarios evaluated. Whether these profiles generalize to real workloads with non-deterministic failure timing, variable latency distributions, and concurrent interacting failure modes is untested.
 
@@ -514,7 +520,7 @@ The proposed ISA extensions bridge the layers: RADMON/RADCHK translate radiation
 
 **Radiation-hardened computing.** Radiation-tolerant processors for space applications rely on TMR (triple modular redundancy), ECC/EDAC on memory paths, SEU detection and correction, and latch-up protection (see BAE Systems RAD750, Mobileye EyeQ6H radiation-tolerant variants, and emerging AI-focused orbital compute programs). These approaches address physical-layer fault tolerance; they do not address semantic-layer execution integrity. D3 proposes complementary coverage by governing execution decisions above the physical fault-correction layer.
 
-**Structured concurrency.** Structured concurrency frameworks (Swift's TaskGroup, Kotlin coroutines, Java Loom) impose lifecycle discipline on concurrent tasks, ensuring child tasks complete before parent scope exits. This provides structural containment analogous to D3's depth and fanout limits. D3 extends this with budget-governed admission and trust-gated continuation; structured concurrency provides lifecycle management but not admissibility control based on accumulated instability.
+**Structured concurrency.** Structured concurrency frameworks (Swift's TaskGroup, Kotlin coroutines, Java Loom) impose lifecycle discipline on concurrent tasks, ensuring child tasks complete before parent scope exits. This provides structural containment analogous to D3's depth and fanout limits. D3 extends this with budget-governed admission and trust-gated continuation; structured concurrency provides lifecycle management but not admissibility control based on accumulated instability. A Swift `TaskGroup`, for example, enforces that all child tasks complete before the parent scope exits — but it has no mechanism to refuse spawning a new child based on the accumulated failure history or budget depletion of prior children in the same group. The lifecycle of the group is bounded; the admission decision for each new child is not conditioned on what the prior children cost. This is the specific gap D3 fills: the admissibility gate fires before each child is spawned, using the residual entropy budget and accumulated trust state from all prior execution in the run.
 
 **Resource governors and query cost estimation.** Database query planners estimate execution cost before committing to a query plan (PostgreSQL cost model, SQL Server Query Optimizer). Resource governors (SQL Server, Oracle) throttle workload groups against CPU, memory, and I/O quotas. These approaches share D3's goal of bounding execution cost in advance. D3 extends this to execution graphs rather than individual queries, incorporates dynamic runtime signals (failure rate, latency, depth), and includes an explicit graduated response (DEGRADE before REFUSE) rather than binary throttle/pass decisions.
 
@@ -540,92 +546,3 @@ The adversarial analysis converts these limits from failures into extension poin
 | Fanout Explosion | 96.000% | 24.995% | 96.000% | Late (entropy) |
 | Cascading Failure | 89.011% | 42.693% | 89.256% | Late (trust) |
 
----
-
-## Appendix B: Case Studies in Missing Refusal Primitives
-
-### B.1 Motivation
-
-The D3 framework introduces refusal as a first-class execution outcome, enforced through admissibility constraints on entropy and trust. While Sections 2–5 demonstrate this behavior in controlled experimental settings, it is instructive to examine whether similar failure modes appear in real-world systems.
-
-This appendix analyzes two well-documented historical failures:
-
-- ☢️ The Chernobyl reactor accident
-- 🚀 The Space Shuttle Challenger disaster
-
-These cases are not direct analogues to D3, but structurally similar systems in which: (1) invalid system state was detectable, (2) continuation remained possible, and (3) catastrophic outcomes emerged through continued execution. We interpret both events through the lens of admissibility and refusal, identifying the absence of enforceable termination as a common failure mode.
-
-### B.2 Case Study I: Chernobyl — Absence of Enforced Termination
-
-#### B.2.1 Context
-
-The Chernobyl reactor accident occurred during a systems test conducted under degraded and unstable operating conditions. The reactor design (RBMK) exhibited known instability characteristics under low-power configurations, including positive reactivity coefficients and delayed feedback effects. During the test sequence, operators reduced reactor power into an unstable regime, disabled or bypassed safety systems, and continued operation despite anomalous readings and procedural violations.
-
-#### B.2.2 Admissibility Interpretation
-
-Mapping to D3 variables:
-
-- Entropy ($H$): increasing reactor instability (thermal fluctuation, xenon poisoning, reactivity variance)
-- Trust ($T$): decreasing reliability of safeguards and adherence to operating procedures
-- Admissibility ($A$): whether continuation of the test is justified
-
-At multiple points in the sequence, $H$ was degraded due to unstable reactor configuration and $T$ was degraded due to disabled safeguards and procedural deviation. Under D3 admissibility:
-
-$$A_t = 0 \quad \text{when } T_t < \tau_T \text{ or } H_t < \rho(o_{t+1})$$
-
-These conditions were met prior to the final control actions.
-
-#### B.2.3 Failure Mode
-
-Despite violation of admissibility conditions, execution continued. The system lacked a mechanism to enforce shutdown when safety thresholds were exceeded, prevent continuation under degraded trust conditions, or disallow operation in known unstable regimes. This allowed the system to enter a positive feedback state, culminating in uncontrolled reactivity increase, steam explosion, and reactor core destruction.
-
-#### B.2.4 Interpretation
-
-The critical failure was not the initial instability, but the continuation of execution in a known invalid state. Chernobyl illustrates a system in which detection of invalid state was possible, but termination was not enforced.
-
-### B.3 Case Study II: Challenger — Refusal Without Enforcement
-
-#### B.3.1 Context
-
-The Space Shuttle Challenger disaster occurred during launch under unusually low ambient temperatures. Prior engineering analysis had identified that the solid rocket booster O-ring seals were sensitive to temperature, with reduced sealing performance in cold conditions. On the day of launch, temperatures were below the range of prior safe operation, engineers from the contractor (Morton Thiokol) explicitly recommended against launch, and a formal "no launch" position was communicated.
-
-#### B.3.2 Admissibility Interpretation
-
-Mapping to D3 variables:
-
-- Entropy ($H$): increased environmental uncertainty (temperature outside validated envelope)
-- Trust ($T$): degraded confidence in component performance under those conditions
-- Admissibility ($A$): whether launch should proceed
-
-The engineering recommendation constitutes an explicit admissibility failure:
-
-$$A_t = 0 \quad \text{(unsafe environmental conditions)}$$
-
-#### B.3.3 Failure Mode
-
-Despite the explicit refusal signal, the recommendation was revisited under managerial pressure, the decision was reversed, and launch was approved. The system exhibited detection of invalid state and generation of a refusal signal, but lack of enforcement.
-
-#### B.3.4 Interpretation
-
-The Challenger disaster demonstrates a distinct failure mode: refusal was identified but not enforced. The presence of a refusal signal alone was insufficient. Without a mechanism to make refusal binding, continuation was permitted, converting known risk into realized failure.
-
-### B.4 Comparative Analysis
-
-| Case | Detection | Refusal Signal | Enforcement | Outcome |
-|---|---|---|---|---|
-| Chernobyl | Partial | Implicit | Absent | Catastrophic |
-| Challenger | Explicit | Present | Absent | Catastrophic |
-
-Both systems satisfy the same pattern: (1) system enters degraded or invalid state; (2) signals indicate risk; (3) continuation remains permissible; (4) system transitions into a catastrophic regime. The shared failure mode is:
-
-> **Systems that permit continuation after admissibility failure will eventually realize catastrophic outcomes under compounding dynamics.**
-
-### B.5 Relevance to D3
-
-The D3 framework addresses these requirements by defining admissibility in terms of entropy and trust, evaluating admissibility at each execution step, and enforcing refusal when conditions are violated:
-
-$$A_t = 0 \Rightarrow \text{execution terminates}$$
-
-In contrast to systems that allow continuation under degraded conditions, D3 ensures that refusal is not advisory but binding. The presence of a structured refusal output — identifying which constraint was violated, what state was preserved, and why execution halted — transforms termination from an exception into an observable, debuggable, integrity-preserving outcome.
-
-The examined failures demonstrate that the absence of an enforceable refusal primitive does not prevent failure. It ensures that failure will compound until it becomes catastrophic.
