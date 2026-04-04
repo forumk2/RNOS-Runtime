@@ -1,10 +1,11 @@
 """Controllers for DB control experiment.
 
-Three controllers operate over QueryState:
+Four controllers operate over QueryState:
 
-1. RNOSDBController  — entropy-based pre-execution gating (structural complexity)
+1. RNOSDBController    — entropy-based pre-execution gating (structural complexity)
 2. SlidingWindowCBController — sliding-window failure-rate circuit breaker
-3. HybridDBController — safety-first merge of RNOS + CB
+3. HybridDBController  — safety-first merge of RNOS + CB (dual-axis)
+4. TriModalDBController — safety-first merge of RNOS + CB + Persistence (tri-axis)
 
 Design mirrors the RNOS + AdaptiveCircuitBreaker hybrid from experiment_5_hybrid,
 adapted to a database-query domain without pulling in the full RNOS stack.
@@ -254,3 +255,108 @@ class HybridDBController:
     def reset(self) -> None:
         self.rnos.reset()
         self.cb.reset()
+
+
+# ---------------------------------------------------------------------------
+# 4. TriModalDBController
+# ---------------------------------------------------------------------------
+
+from experiments.common.persistence import PersistenceAssessment, PersistenceController  # noqa: E402
+
+
+@dataclass
+class TriModalAssessment:
+    decision: Decision
+    trigger_source: str        # "rnos" | "cb" | "persistence" | "none"
+    rnos_decision: Decision
+    rnos_entropy: float
+    cb_decision: Decision
+    cb_failure_rate: float
+    cb_state: str
+    persist_decision: str      # "allow" | "degrade" | "refuse"
+    persist_score: float
+    persist_failure_rate: float
+    persist_above_floor: float
+    persist_window_fill: int
+
+
+class TriModalDBController:
+    """Safety-first merge of RNOS + CB + Persistence for DB queries.
+
+    Extends HybridDBController with a third control axis: the PersistenceController.
+    Merge rule: max(severity(rnos), severity(cb), severity(persistence)) wins.
+
+    trigger_source attribution: the highest-severity source. If multiple sources
+    tie at the winning severity, they are joined with "+" (e.g. "rnos+cb").
+    "none" when all three return ALLOW.
+
+    Persistence requires a full long window (default 10 steps) before it can
+    raise any alert — ensuring it cannot fire before RNOS or CB on fast-diverging
+    scenarios. This guarantees no regression on existing scenarios.
+    """
+
+    _SEVERITY: dict[str, int] = {"allow": 0, "degrade": 1, "refuse": 2}
+
+    def __init__(
+        self,
+        rnos: Optional[RNOSDBController] = None,
+        cb: Optional[SlidingWindowCBController] = None,
+        persistence: Optional[PersistenceController] = None,
+    ) -> None:
+        self.rnos = rnos or RNOSDBController()
+        self.cb = cb or SlidingWindowCBController()
+        self.persistence = persistence or PersistenceController()
+        self._last_rnos_entropy: float = 0.0
+
+    def evaluate(self, state: QueryState) -> TriModalAssessment:
+        rnos_assessment = self.rnos.evaluate(state)
+        cb_assessment = self.cb.evaluate()
+        persist_assessment = self.persistence.evaluate()
+
+        self._last_rnos_entropy = rnos_assessment.entropy
+
+        rnos_sev = _to_severity(rnos_assessment.decision)
+        cb_sev = _to_severity(cb_assessment.decision)
+        persist_sev = self._SEVERITY[persist_assessment.decision]
+
+        merged_sev = max(rnos_sev, cb_sev, persist_sev)
+        merged_decision = _from_severity(merged_sev)
+
+        # Attribute trigger source
+        if merged_sev == 0:
+            trigger_source = "none"
+        else:
+            winners = []
+            if rnos_sev == merged_sev:
+                winners.append("rnos")
+            if cb_sev == merged_sev:
+                winners.append("cb")
+            if persist_sev == merged_sev:
+                winners.append("persistence")
+            trigger_source = "+".join(winners)
+
+        return TriModalAssessment(
+            decision=merged_decision,
+            trigger_source=trigger_source,
+            rnos_decision=rnos_assessment.decision,
+            rnos_entropy=rnos_assessment.entropy,
+            cb_decision=cb_assessment.decision,
+            cb_failure_rate=cb_assessment.failure_rate,
+            cb_state=cb_assessment.state,
+            persist_decision=persist_assessment.decision,
+            persist_score=persist_assessment.score,
+            persist_failure_rate=persist_assessment.rolling_failure_rate,
+            persist_above_floor=persist_assessment.time_above_entropy_floor,
+            persist_window_fill=persist_assessment.window_fill,
+        )
+
+    def record_outcome(self, state: QueryState, *, success: bool) -> None:
+        self.rnos.record_outcome(state)
+        self.cb.record_outcome(success)
+        self.persistence.update(success, self._last_rnos_entropy)
+
+    def reset(self) -> None:
+        self.rnos.reset()
+        self.cb.reset()
+        self.persistence.reset()
+        self._last_rnos_entropy = 0.0

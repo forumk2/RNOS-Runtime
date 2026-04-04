@@ -1,6 +1,6 @@
 """Scenario definitions for CI control experiment.
 
-Two failure geometries designed to stress-test different control primitives:
+Three failure geometries designed to stress-test different control primitives:
 
 Scenario A — pipeline_fanout_explosion (RNOS strength)
 -------------------------------------------------------
@@ -90,6 +90,50 @@ def make_flaky_test_storm(max_steps: int = 20) -> list[PipelineState]:
             step=n,
             active_jobs=3,
             total_jobs_spawned=3 * n,
+            retry_count=cumulative_retries,
+            success=success,
+        ))
+        if not success:
+            cumulative_retries += 1
+    return states
+
+
+# ---------------------------------------------------------------------------
+# Scenario C: gradual_flakiness
+# ---------------------------------------------------------------------------
+
+def make_gradual_flakiness(max_steps: int = 20) -> list[PipelineState]:
+    """Persistent 50% failure rate with stable structure — gradual flakiness.
+
+    Failure pattern: F, S alternating.
+        active_jobs       = 2  (stable, modest parallelism)
+        total_jobs_spawned = 2 * step  (linear, no explosion)
+        retry_count       = cumulative failures so far
+        success           = False for odd steps, True for even steps
+
+    Why RNOS misses this:
+        active_jobs_score = 0.8 (constant)
+        spawned_score grows slowly: log2(2*20)*0.5=2.66 (cap 3.0 not reached)
+        retry_score accumulates: 10 retries by step 20 → capped at 3.0
+        Max entropy at step 20: 0.8+2.66+3.0 = 6.46 — never reaches DEGRADE (8.0).
+
+    Why CB misses this (window=5, threshold=0.6, strict >):
+        Alternating F,S window oscillates at failure_rate=0.6 or 0.4 → never > 0.6.
+
+    Why Persistence catches this (window=10, refuse_threshold=0.50):
+        At step 11 (first full window, steps 1-10):
+            failure_rate    = 5/10 = 0.50
+            time_above_floor = 7/10 = 0.70  (entropy > 3.0 from step ~4)
+            score = 0.7*0.50 + 0.3*0.70 = 0.56 >= 0.50 → REFUSE
+    """
+    states: list[PipelineState] = []
+    cumulative_retries = 0
+    for n in range(1, max_steps + 1):
+        success = (n % 2 == 0)        # F on odd, S on even
+        states.append(PipelineState(
+            step=n,
+            active_jobs=2,
+            total_jobs_spawned=2 * n,
             retry_count=cumulative_retries,
             success=success,
         ))

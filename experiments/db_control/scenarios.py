@@ -1,6 +1,6 @@
 """Scenario definitions for DB control experiment.
 
-Two failure geometries designed to stress-test different control primitives:
+Three failure geometries designed to stress-test different control primitives:
 
 Scenario A — cascading_query_explosion (RNOS strength)
 -------------------------------------------------------
@@ -83,6 +83,52 @@ def make_lock_contention(max_steps: int = 20) -> list[QueryState]:
     for n in range(1, max_steps + 1):
         success = pattern[(n - 1) % 3]
         lock_wait = 20.0 if success else 500.0
+        cost = 10.0
+        states.append(QueryState(
+            step=n,
+            join_depth=2,
+            estimated_cost=cost,
+            lock_wait_ms=lock_wait,
+            success=success,
+            cumulative_cost=cumulative,
+        ))
+        cumulative += cost
+    return states
+
+
+# ---------------------------------------------------------------------------
+# Scenario C: slow_lock_drift
+# ---------------------------------------------------------------------------
+
+def make_slow_lock_drift(max_steps: int = 20) -> list[QueryState]:
+    """Persistent 50% failure rate with no structural growth — slow burn drift.
+
+    Failure pattern: F, S alternating.
+        join_depth     = 2        (stable)
+        estimated_cost = 10.0     (stable)
+        lock_wait_ms   = 150 on failure, 20 on success  (moderate contention)
+        success        = False for odd steps, True for even steps
+
+    Why RNOS misses this:
+        entropy = 2.0 + 1.66 + cumulative_cost_score
+        cumulative_cost_score caps at 2.0 (after 20 steps cumulative=200).
+        Max entropy = 5.66 — never reaches DEGRADE (8.0).
+
+    Why CB misses this (window=5, threshold=0.6, strict >):
+        Alternating F,S fills 5-window as [F,S,F,S,F] → failure_rate=0.6,
+        not strictly > 0.6 → CB stays closed throughout.
+
+    Why Persistence catches this (window=10, refuse_threshold=0.50):
+        At step 11 (first full window, steps 1-10):
+            failure_rate    = 5/10 = 0.50
+            time_above_floor = 10/10 = 1.00  (entropy=3.66+ > floor 3.0 always)
+            score = 0.7*0.50 + 0.3*1.00 = 0.65 >= 0.50 → REFUSE
+    """
+    states: list[QueryState] = []
+    cumulative = 0.0
+    for n in range(1, max_steps + 1):
+        success = (n % 2 == 0)        # F on odd, S on even
+        lock_wait = 20.0 if success else 150.0
         cost = 10.0
         states.append(QueryState(
             step=n,
