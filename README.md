@@ -23,6 +23,90 @@ RNOS terminated at step 4. An unprotected baseline ran all 20 steps; 18 failed. 
 
 ---
 
+## 🧪 Proof + CI Gate
+
+**RNOS is a control system that detects instability and stops unsafe execution before collapse propagates.**
+
+Three experiments demonstrate where each controller wins — and where it doesn't.
+
+### The Three Proof Scenarios
+
+| Scenario | Instability Type | Winner | Result |
+|---|---|---|---|
+| [Retry Storm](experiments/retry_storm_showcase/) | Structural cascade | RNOS | 99.8% call reduction |
+| [Slow Drift](experiments/slow_drift_showcase/) | Distributed density | Circuit Breaker | RNOS correctly does not trigger |
+| [Mixed](experiments/hybrid_showcase/) | Combined instability | Hybrid | Stops at earliest valid signal |
+
+### Key Results
+
+**Retry Storm** — 70% failure rate, fanout-2 branching (supercritical, 1.4× amplification):
+```
+Baseline:  10,000 calls  →  COLLAPSED
+RNOS:          20 calls  →  REFUSED (early)
+Reduction: 99.8%
+```
+
+**Slow Drift** — 40% distributed failures, no long streaks:
+```
+RNOS:   150 steps  →  COMPLETED (missed)   peak entropy: 2.60 / 10.0 threshold
+CB:      51 steps  →  STOPPED (detected)   window rate: 80%
+```
+RNOS entropy is bounded at ~2.6 for flat sequential calls. No structural expansion = no signal.
+
+**Mixed (Hybrid)** — Phase 1: retry storm. Phase 2: slow drift:
+```
+RNOS:    8 steps  →  STOPPED  (Phase 1 structural, entropy 10.3)
+CB:     14 steps  →  STOPPED  (Phase 2 density, window 80%)
+Hybrid:  8 steps  →  STOPPED  (RNOS fires first — earliest correct signal)
+```
+
+### CI Gate
+
+RNOS is implemented as a live compute gate in [`.github/workflows/rnos-hybrid-gate.yml`](.github/workflows/rnos-hybrid-gate.yml). Each pipeline step is evaluated before execution continues.
+
+Real gate output on a 10-step pipeline with a burst failure sequence:
+
+```
+Step 1  entropy=0.50  CB=1/5 0.00  →  ALLOW
+Step 2  entropy=2.70  CB=2/5 0.50  →  ALLOW
+Step 3  entropy=4.90  CB=3/5 0.67  →  DEGRADE  (RNOS)
+Step 4  entropy=7.10  CB=4/5 0.75  →  REFUSE   (RNOS)
+Steps 5–10: skipped
+
+GATE CLOSED: Pipeline halted at step 4.
+```
+
+Three consecutive failures drove structural entropy from 2.7 → 7.1 in two steps. The CB window was 4/5 full (rate 0.75) and had not yet tripped — RNOS acted first. The gate enforces a hard execution boundary: once refused, no subsequent step runs.
+
+To run it locally:
+```powershell
+./scripts/update_state.ps1 -Init
+for ($step = 1; $step -le 10; $step++) {
+    $f = [int](./scripts/simulate_failure.ps1 -Step $step)
+    ./scripts/update_state.ps1 -Failure $f -Step $step
+    ./scripts/hybrid_gate.ps1  -Step $step
+    if ($LASTEXITCODE -ne 0) { break }
+}
+```
+
+### Core Insight
+
+**Instability is not one thing. Different failure modes require different observers.**
+
+- **RNOS** → structural instability (retry depth, fanout, cumulative cost)
+- **Circuit Breaker** → density instability (failure rate in a sliding window)
+- **Hybrid** → selects the earliest valid signal from either observer
+
+Neither controller alone is sufficient. Hybrid is not redundancy — it is required by the structure of the problem.
+
+### Why This Matters
+
+- Stops runaway pipelines before collapse propagates downstream
+- Reduces wasted compute (99.8% on structural cascades; RNOS acts before CB has a full window)
+- Makes the failure mode observable: `trigger_source` identifies which signal fired and why
+
+---
+
 ## How It Works
 
 RNOS evaluates two signals before each action:
