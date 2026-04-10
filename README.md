@@ -27,7 +27,7 @@ RNOS terminated at step 4. An unprotected baseline ran all 20 steps; 18 failed. 
 
 **RNOS is a control system that detects instability and stops unsafe execution before collapse propagates.**
 
-Three experiments demonstrate where each controller wins — and where it doesn't.
+Five showcase experiments demonstrate where each controller wins and where they do not.
 
 ### Showcase Scenarios
 
@@ -37,6 +37,7 @@ Three experiments demonstrate where each controller wins — and where it doesn'
 | [Slow Drift](experiments/slow_drift_showcase/) | Distributed density | Circuit Breaker | RNOS correctly does not trigger |
 | [Mixed](experiments/hybrid_showcase/) | Combined instability | Hybrid | Stops at earliest valid signal |
 | [Synthetic Adversarial Agent](experiments/adversarial_agent_showcase/) | Adaptive pressure, pivots, persistence | Scenario-specific | Compares Baseline / RNOS / CB / HYBRID on the same seeded graph |
+| [Smoldering Adversary](experiments/smoldering_adversary_showcase/) | Slow drift, recovery debt, fatigue | Scenario-specific | Highlights long-tail damage and RNOS / CB complementarity under low-and-slow pressure |
 
 ### Key Results
 
@@ -386,6 +387,16 @@ python -m experiments.adversarial_agent_showcase.run --mode all --all-seeds
 
 Results are written to `results/adversarial_agent_showcase/` and the scenario overview lives in `experiments/adversarial_agent_showcase/README.md`.
 
+### Run The Smoldering Adversary Showcase
+
+```bash
+python -m experiments.smoldering_adversary_showcase.run --mode all --seed 42
+python -m experiments.smoldering_adversary_showcase.run --mode hybrid --seed 1337
+python -m experiments.smoldering_adversary_showcase.run --mode all --all-seeds
+```
+
+Results are written to `results/smoldering_adversary_showcase/` and the scenario overview lives in `experiments/smoldering_adversary_showcase/README.md`.
+
 ### Generate Report from Existing Data
 
 ```bash
@@ -497,3 +508,4 @@ MIT
 ## Author
 
 Rowan Ashford
+
