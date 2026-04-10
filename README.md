@@ -29,13 +29,14 @@ RNOS terminated at step 4. An unprotected baseline ran all 20 steps; 18 failed. 
 
 Three experiments demonstrate where each controller wins — and where it doesn't.
 
-### The Three Proof Scenarios
+### Showcase Scenarios
 
 | Scenario | Instability Type | Winner | Result |
 |---|---|---|---|
 | [Retry Storm](experiments/retry_storm_showcase/) | Structural cascade | RNOS | 99.8% call reduction |
 | [Slow Drift](experiments/slow_drift_showcase/) | Distributed density | Circuit Breaker | RNOS correctly does not trigger |
 | [Mixed](experiments/hybrid_showcase/) | Combined instability | Hybrid | Stops at earliest valid signal |
+| [Synthetic Adversarial Agent](experiments/adversarial_agent_showcase/) | Adaptive pressure, pivots, persistence | Scenario-specific | Compares Baseline / RNOS / CB / HYBRID on the same seeded graph |
 
 ### Key Results
 
@@ -374,6 +375,16 @@ python experiments/experiment_5_hybrid/run_experiment_5.py --seed 42 --max-steps
 ```
 
 Results are written to `results/experiment_5/` (per-step CSVs) and `docs/experiment_5_hybrid.md`.
+
+### Run The Synthetic Adversarial Agent Showcase
+
+```bash
+python -m experiments.adversarial_agent_showcase.run --mode all --seed 42
+python -m experiments.adversarial_agent_showcase.run --mode hybrid --seed 1337
+python -m experiments.adversarial_agent_showcase.run --mode all --all-seeds
+```
+
+Results are written to `results/adversarial_agent_showcase/` and the scenario overview lives in `experiments/adversarial_agent_showcase/README.md`.
 
 ### Generate Report from Existing Data
 
