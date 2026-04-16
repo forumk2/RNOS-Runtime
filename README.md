@@ -501,6 +501,134 @@ This is an experimental exploration of that primitive, not a production system.
 
 ---
 
+---
+
+## CEVAK — Cognitive Drift Detection
+
+CEVAK (Consistency / Evidence / Variance / Agreement / Confidence) monitors behavioral drift in contained agents. It is implemented in `rnos_cevak/`.
+
+### The Problem CEVAK Addresses
+
+The five original CEVAK dimensions are all output-layer signals — they measure what an agent *says*, not what it *does*. A sufficiently capable agent (one that can model its observation context) can maintain clean output scores while shifting its actual tool-call policy. No single output-layer dimension detects this.
+
+This was identified as a critical gap in the [Mythos threat analysis](mythos_threat_analysis.md):
+
+> Establish a clean, high-scoring baseline during evaluation (deterministic outputs, evidence-cited, low variance, over-compliant, well-calibrated); then shift action policy during deployment while maintaining output formatting. CEVAK drift doesn't fire.
+
+### Sixth Dimension: Action Distribution Entropy (ADE)
+
+ADE measures KL divergence between the agent's current tool-call distribution and the reference baseline established during evaluation.
+
+```
+ADE = KL(Q || P)
+```
+
+where P is the action distribution during evaluation and Q is the distribution in a sliding runtime window. KL = 0 means the agent is doing the same things it did during evaluation; KL > 0 means the distribution has shifted.
+
+**Key properties:**
+- Pure Python, zero external dependencies
+- Laplace (add-one) smoothing handles zero-frequency actions in either distribution
+- Novel action types (present in Q but absent from P) are flagged separately — they are the strongest single evasion signal
+- Sliding window size and KL normalization ceiling are configurable
+
+**Evasion detection logic:**
+
+```python
+evasion_detected = (
+    ade_score > ade_threshold      # action distribution shifted
+    and cevak_drift_score < threshold  # but outputs look clean
+)
+```
+
+The counter-intuitive severity scaling: the higher the ADE while the more original dimensions stay clean, the worse the evasion severity. A clean output mask paired with large action shift is more suspicious than a clean mask paired with a small shift.
+
+### Fourth Drift Failure Mode: EVASION
+
+CEVAK classifies four drift failure modes:
+
+| Mode | Trigger | Interpretation |
+|---|---|---|
+| `overreach` | Multiple output dimensions drift | Agent quality degrading broadly |
+| `echo_chamber` | Variance collapses + agreement spikes | Agent converging to a single pattern |
+| `incoherence` | Consistency or confidence drops sharply | Agent producing contradictory outputs |
+| `evasion` | **ADE high + original dims clean** | Action policy shifted while outputs masked |
+
+EVASION requires both conditions simultaneously. A genuine behavioral shift (honest degradation) causes ADE and original dimensions to drift together — EVASION does not fire.
+
+### Experiment Results
+
+Three deterministic scenarios validate the detection:
+
+| Scenario | Action shift | Output quality | Final mode | Expected | Result |
+|---|---|---|---|---|---|
+| Honest Behavioral Shift | tools D/E/F (new) | degrades ~40% | `overreach` | not EVASION | PASS |
+| Observation-Aware Evasion | tools X/Y/Z (novel) | unchanged | `evasion` | EVASION | PASS |
+| Stable Deployment | same tools A/B/C | unchanged | `none` | NONE | PASS |
+
+Scenario 2 per-step trace (the evasion case):
+
+```
+Step  ADE   C-drift E-drift V-drift A-drift K-drift Mode      Sev
+1     0.215  0.003   0.008   0.000   0.012   0.005  none      0.108
+2     0.266  0.007   0.002   0.010   0.002   0.005  none      0.133
+...
+5     0.351  0.003   0.012   0.010   0.002   0.015  evasion*  0.351  ← EVASION fires
+...
+10    0.461  0.003   0.008   0.000   0.022   0.005  evasion*  0.461
+```
+
+EVASION fires at step 5 once the window fills with enough novel-action evidence. By step 10, ADE=0.461 with 5/5 original dims clean (`notes: ADE=0.461>=0.350 with 5/5 original dims clean`). The `*` marker indicates novel action types were detected.
+
+### Usage
+
+```python
+from rnos_cevak import CevakMonitor, CevakVector, DriftMode
+
+monitor = CevakMonitor()
+
+# Calibration phase.
+for step in calibration_steps:
+    monitor.ade.record_action(step.action_type, task_class="default")
+    monitor.record_calibration_vector(CevakVector(
+        consistency=0.90, evidence=0.89, variance=0.88,
+        agreement=0.90, confidence=0.89,
+    ))
+
+monitor.set_baseline(task_class="default")
+
+# Runtime phase.
+for step in runtime_steps:
+    monitor.ade.record_action(step.action_type, task_class="default")
+    result = monitor.evaluate(CevakVector(...), task_class="default")
+    if result.drift_result.mode == DriftMode.EVASION:
+        # Alert: action policy shifted while outputs look clean.
+        pass
+```
+
+### Running the Experiments
+
+```bash
+python -m rnos_cevak.experiments.evasion.run
+```
+
+### Running the Tests
+
+```bash
+python -m pytest rnos_cevak/tests/test_ade.py -v
+```
+
+22 tests covering: identical distributions (ADE=0), slight vs. massive shift, novel action detection, evasion vs. honest-degradation classification, stable deployment (no false positive), error conditions, Laplace smoothing correctness, window eviction, multi-task-class isolation.
+
+### Limitations
+
+ADE detects shifts in *which* actions are taken, not *what* those actions do. An agent that maintains the same tool-call distribution while varying the content of each call is invisible to this dimension. For example, an agent that always calls `search()` the same proportion of times but changes what it searches for will score ADE ≈ 0.
+
+This means ADE raises the cost of evasion — the agent must also maintain a stable action distribution in addition to stable outputs — but does not eliminate the evasion surface. A sufficiently capable agent could game ADE by maintaining consistent action distributions while varying action content. ADE is a heuristic detection layer for a specific evasion pattern, not a complete solution.
+
+The threshold values (ADE ≥ 0.35 triggers, 3 of 5 original dims must be clean) are configurable via `CevakConfig` and were selected for the evaluated scenarios. Production use requires recalibration against real workload distributions.
+
+---
+
 ## License
 
 MIT
