@@ -224,9 +224,9 @@ RNOS-2.0 is available at github.com/forumk2/RNOS-2.0 under Apache 2.0.
 
 ### 3.2 RNOS-Runtime
 
-RNOS-Runtime implements the discrimination experiment suite. It uses a configurable failure source with deterministic schedules, an adaptive circuit breaker (CB) as a non-strawman baseline, and a selectivity scoring methodology that measures correct discrimination between recoverable and non-recoverable scenarios.
+RNOS-Runtime implements the discrimination experiment suite. It uses a configurable failure source with deterministic schedules, an adaptive circuit breaker (CB) as a non-strawman baseline, and an evaluation methodology that measures correct discrimination between recoverable and non-recoverable scenarios.
 
-In RNOS-Runtime, entropy is computed as a weighted composite of six signals evaluated at each step: consecutive failures (retry_score), recent failure rate over 5 steps (failure_score), cumulative execution cost (cost_score, non-resetting), tool repetition (repeated_tool), planner inference latency (latency_score), and execution depth (depth_score). The admission decision compares the accumulated score against mode thresholds (DEGRADE at 9.0, REFUSE at 11.0).
+In RNOS-Runtime, entropy is computed as a weighted composite of six signals evaluated at each step: consecutive failures (retry_score), recent failure rate over 5 steps (failure_score), cumulative execution cost (cost_score, non-resetting), tool repetition (repeated_tool), planner inference latency (latency_score), and execution depth (depth_score). The scorer measures structural pressure without distinguishing benign from adversarial sources; containment therefore applies symmetrically, which is the correct design property for a refusal-as-primitive system. The admission decision compares the accumulated score against mode thresholds (DEGRADE at 9.0, REFUSE at 11.0).
 
 The adaptive CB uses a sliding-window failure-rate measurement with exponential backoff and adaptive threshold adjustment. It is configured to represent a serious, tuned baseline — not a strawman. The experimental results in Section 4.3 characterize where each approach has a structural advantage.
 
