@@ -667,6 +667,22 @@ Indexed: 312 new chunks, 0 unchanged.
 
 Re-indexing skips unchanged chunks (keyed on path + start line + content hash). Run it again after commits to pick up changes.
 
+### Two modes
+
+`rnos-query` has two synthesis commands that use the same retrieval pipeline but produce different output shapes.
+
+**`ask`** -- grounded Q&A. Retrieves 6 chunks and answers directly from the context. States what the context does not cover rather than speculating. Good for factual questions about specific behavior, thresholds, or code paths.
+
+```bash
+rnos-query ask "How does RNOS calculate entropy?"
+```
+
+**`explore`** -- grounded design exploration. Retrieves 4 chunks (more output headroom) and structures the response in three labeled sections: GROUNDED (claims from the context, all cited), INFERRED (conclusions that follow from grounded facts), and PROPOSED (hypotheses and extension ideas that go past the evidence, never cited). Good for questions where extending past the evidence is useful, such as architecture questions, integration ideas, or open design problems.
+
+```bash
+rnos-query explore "How could CEVAK drift signals feed into RNOS containment policy?"
+```
+
 **4. Ask a question**
 
 ```bash

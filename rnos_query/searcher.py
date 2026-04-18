@@ -21,10 +21,19 @@ class SearchResult:
     score: float
 
 
-def search(query: str, cfg: Config) -> list[SearchResult]:
-    """Return top-K chunks closest to the query vector."""
+def search(
+    query: str, cfg: Config, top_k: int | None = None
+) -> list[SearchResult]:
+    """Return top-K chunks closest to the query vector.
+
+    Args:
+        query: Natural-language query string.
+        cfg: Runtime configuration.
+        top_k: Override for the number of results. Defaults to cfg.retrieval.top_k.
+    """
     conn = get_connection()
     q_bytes = sqlite_vec.serialize_float32(embed_query(query, cfg))
+    k = top_k if top_k is not None else cfg.retrieval.top_k
 
     rows = conn.execute(
         """
@@ -36,7 +45,7 @@ def search(query: str, cfg: Config) -> list[SearchResult]:
           AND k = ?
         ORDER BY v.distance
         """,
-        [q_bytes, cfg.retrieval.top_k],
+        [q_bytes, k],
     ).fetchall()
 
     return [
