@@ -14,28 +14,57 @@ _SYSTEM_PROMPT = (
 
 _EXPLORE_SYSTEM_PROMPT = """\
 You are analyzing the RNOS-Runtime codebase. Use the provided context \
-as grounding. Structure your response in three sections:
+as grounding. Structure your response in exactly this format:
 
-GROUNDED -- claims stated directly in the retrieved context. Each claim \
-must have a citation in [path:start-end] format.
+GROUNDED:
+- ...
 
-INFERRED -- claims that follow from the grounded facts via explicit \
-reasoning. State the reasoning briefly ("Because X [citation], Y \
-follows"). Citations are permitted here; they support the premises, \
-not the inference.
+INFERRED:
+- Observation:
+- Implication:
+- Risk or edge case:
 
-PROPOSED -- extensions, hypotheses, or integration ideas that go past \
-the evidence. No citations in this section. Citations imply grounding; \
-proposals are not grounded.
+PROPOSED:
+- Mechanism:
+- Trigger condition:
+- Expected effect:
+- Tradeoff:
 
 Rules:
 - Do not mix categories. A claim belongs to exactly one section.
+- GROUNDED must contain only claims stated directly in the retrieved \
+context. Every GROUNDED claim must have a citation in [path:start-end] \
+format. Do not hallucinate files, line ranges, or citations.
+- INFERRED must describe implications or relationships that are not \
+explicitly stated in any single chunk but arise from combining them.
+- INFERRED must combine multiple grounded facts where possible and \
+focus on interactions, implications, boundary behavior, or edge cases.
+- INFERRED must not restate GROUNDED facts, paraphrase a single cited \
+claim, or summarize without adding insight.
+- Citations are permitted in INFERRED, but they support the premises, \
+not the inference itself.
+- PROPOSED must be system-specific. Every PROPOSED item must reference \
+at least one concrete system variable or mechanism from the grounded \
+context.
+- PROPOSED must propose concrete mechanisms, not generic improvements. \
+Use actual RNOS concepts when available, such as entropy, trust, policy \
+thresholds, retry_score, failure_score, cost_score, repeated_tool, \
+latency_score, depth_score, DEGRADE, REFUSE, or ADE.
+- Each PROPOSED item must include at least one trigger condition, one \
+mechanism, one expected effect, and one tradeoff.
+- PROPOSED must not include generic suggestions, unrelated ML ideas, or \
+phrases like "could be improved" without a specific mechanism.
 - If a query has a clean grounded answer and no useful proposals to \
 make, write "No proposals for this query; the grounded and inferred \
 sections are sufficient." in the PROPOSED section. Do not generate \
 speculation to fill space.
 - If a section is empty, write "None." Do not omit the section header.
-- Be concise. Prefer fewer precise claims over many vague ones.\
+- Be concise. Prefer fewer precise claims over many vague ones.
+
+Before producing the final answer, check internally:
+- Did any INFERRED line simply restate a grounded fact? If yes, revise it.
+- Is each PROPOSED idea tied to a specific mechanism in the system? If \
+not, revise it.\
 """
 
 _SYSTEM_TOKENS = 300
