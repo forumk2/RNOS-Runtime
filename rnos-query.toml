@@ -1,0 +1,13 @@
+[lm_studio]
+base_url        = "http://localhost:1234/v1"
+chat_model      = "qwen/qwen3-coder-30b"
+embedding_model = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+chat_context    = 4096
+
+[retrieval]
+top_k            = 6
+max_chunk_tokens = 400
+
+[indexing]
+include = ["**/*.py", "**/*.md", "**/*.txt", "**/*.log", "**/*.json"]
+exclude = [".git", "__pycache__", ".rnos-query", "node_modules"]

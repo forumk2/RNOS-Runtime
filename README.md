@@ -629,6 +629,93 @@ The threshold values (ADE ≥ 0.35 triggers, 3 of 5 original dims must be clean)
 
 ---
 
+## rnos-query: Semantic Search CLI
+
+`rnos-query` is a local CLI tool for semantic search and Q&A over this codebase. It chunks source files into a SQLite vector database and answers questions by retrieving relevant chunks and synthesizing grounded answers with a locally-hosted LLM via LM Studio.
+
+### Setup
+
+**1. Install LM Studio and load models**
+
+Download [LM Studio](https://lmstudio.ai/). In the Local Server tab, load both:
+
+- **Chat model**: `qwen/qwen3-coder-30b`
+- **Embedding model**: `nomic-ai/nomic-embed-text-v1.5-GGUF`
+
+Start the local server (default: `http://localhost:1234`). Both models must be loaded simultaneously.
+
+**2. Install the CLI**
+
+```bash
+pip install -e ".[query]"
+```
+
+**3. Index the codebase**
+
+Run from the repo root:
+
+```bash
+rnos-query index
+```
+
+Expected output:
+
+```
+  Embedded 312/312 chunks...
+Indexed: 312 new chunks, 0 unchanged.
+```
+
+Re-indexing skips unchanged chunks (keyed on path + start line + content hash). Run it again after commits to pick up changes.
+
+**4. Ask a question**
+
+```bash
+rnos-query ask "How does RNOS calculate entropy?"
+```
+
+Expected output shape:
+
+```
+RNOS accumulates entropy via a weighted sum of action outcomes. Each failed
+tool call adds to the running score according to the sensitivity parameter in
+the policy config [rnos/entropy.py:14-38]. When the score crosses the refusal
+threshold the runtime issues a REFUSE decision and halts the loop
+[rnos/runtime.py:91-107].
+
+Citations:
+  rnos/entropy.py:14-38  [3a5531f]
+  rnos/runtime.py:91-107  [3a5531f]
+  configs/default_policy.yaml:1-22  [3a5531f]
+```
+
+**5. Debug retrieval**
+
+```bash
+rnos-query debug "entropy threshold"
+```
+
+Prints raw chunks with cosine-distance scores — useful for diagnosing why a question gets a poor answer.
+
+**6. Configuration**
+
+Edit `rnos-query.toml` at the repo root to change the LM Studio endpoint, models, context size, or retrieval parameters.
+
+### Limitations
+
+**4k context window**: With ~300 tokens for the system prompt and ~800 reserved for output, only ~2800 tokens are available for retrieved chunks — roughly 6 chunks of ~400 tokens each. Questions requiring more than ~6 code locations will get partial answers without warning; the budget silently drops the lowest-scoring chunks.
+
+**Chunking misses cross-function reasoning**: Each Python chunk is one top-level `def` or `class` in isolation. The retrieval cannot follow a call chain across multiple functions. If understanding the answer requires tracing `A → B → C`, you may get only one or two of those links depending on which surface is closest to your query.
+
+**No call-graph or import traversal**: The index has no awareness of which functions call which others, what a module imports, or how data flows between files. Questions like "what code path leads to REFUSE?" require manual tracing after retrieval gives you candidate locations.
+
+**Embedding similarity is vocabulary-sensitive**: Semantic embeddings are trained primarily on natural language. Two functions with similar narrative descriptions but different implementations may score higher than the exact function you want. Conversely, low-level implementation details that use different vocabulary from the query may rank poorly despite being directly relevant.
+
+**No hybrid search**: There is no BM25 or keyword fallback. Queries that contain exact identifiers (function names, class names, config keys) may fail if the embedding model does not preserve them accurately as semantic signal.
+
+**Index staleness**: The index is a point-in-time snapshot. After commits that add or modify files, re-run `rnos-query index`. Deleted files are not removed from the index automatically in v1.
+
+---
+
 ## License
 
 MIT

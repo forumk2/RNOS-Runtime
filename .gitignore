@@ -207,6 +207,9 @@ cython_debug/
 logs/
 results/
 
+# rnos-query index (local vector DB)
+.rnos-query/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

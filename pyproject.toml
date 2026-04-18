@@ -12,5 +12,18 @@ license = { text = "MIT" }
 authors = [{ name = "forumk2" }]
 dependencies = ["PyYAML>=6.0", "openai>=1.40.0", "matplotlib>=3.8"]
 
+[project.optional-dependencies]
+query = [
+    "sqlite-vec>=0.1.6",
+    "tree-sitter>=0.22.0",
+    "tree-sitter-python>=0.22.0",
+    "tiktoken>=0.7.0",
+    "click>=8.1.0",
+    "gitpython>=3.1.0",
+]
+
+[project.scripts]
+rnos-query = "rnos_query.cli:cli"
+
 [tool.setuptools.packages.find]
-include = ["rnos*", "agent*", "tools*", "integrations*", "experiments*"]
+include = ["rnos*", "agent*", "tools*", "integrations*", "experiments*", "rnos_query*"]
