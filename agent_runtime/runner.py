@@ -23,7 +23,7 @@ def _log_result(step: str, execution: ExecutionResult, validation: ExecutionResu
         validation.error,
     )
     logger.info(
-        "runner.rnos action=%s reason=%s entropy=%.2f",
+        "runner.rnos action=%s reason=%s instability=%.2f",
         decision.action,
         decision.reason,
         decision.entropy_score,
