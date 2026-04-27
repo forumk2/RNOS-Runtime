@@ -206,6 +206,7 @@ cython_debug/
 # RNOS runtime outputs
 logs/
 results/
+workspace/
 
 # rnos-query index (local vector DB)
 .rnos-query/
