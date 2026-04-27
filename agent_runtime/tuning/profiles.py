@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
 
 
 @dataclass(frozen=True)
 class TuningProfile:
-    entropy_threshold: float = 7.0
-    drift_threshold: float = 4.5
-    retry_limit: int = 2
-    tool_risk_threshold: float = 9.0
+    entropy_threshold: float = field(default_factory=lambda: _env_float("RNOS_ENTROPY_THRESHOLD", 7.0))
+    drift_threshold: float = field(default_factory=lambda: _env_float("RNOS_DRIFT_THRESHOLD", 4.5))
+    retry_limit: int = field(default_factory=lambda: _env_int("RNOS_RETRY_LIMIT", 2))
+    tool_risk_threshold: float = field(default_factory=lambda: _env_float("RNOS_TOOL_RISK_THRESHOLD", 9.0))
     enforce_strict_format: bool = False
 
     min_entropy_threshold: float = 5.5
@@ -64,3 +65,23 @@ class TuningProfile:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default

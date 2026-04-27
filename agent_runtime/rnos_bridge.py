@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Literal
 
 from rnos.policy import PolicyConfig, evaluate_policy
@@ -44,12 +45,14 @@ class RNOSBridge:
 
     def __init__(
         self,
-        refuse_threshold: float = 7.0,
-        degrade_threshold: float = 4.5,
+        refuse_threshold: float | None = None,
+        degrade_threshold: float | None = None,
     ) -> None:
+        refuse = refuse_threshold if refuse_threshold is not None else _env_float("RNOS_ENTROPY_THRESHOLD", 7.0)
+        degrade = degrade_threshold if degrade_threshold is not None else _env_float("RNOS_DEGRADE_THRESHOLD", 4.5)
         self.policy_config = PolicyConfig(
-            refuse_entropy=refuse_threshold,
-            degrade_entropy=degrade_threshold,
+            refuse_entropy=refuse,
+            degrade_entropy=degrade,
             refuse_trust=-1.0,
             degrade_trust=-1.0,
         )
@@ -208,3 +211,13 @@ class RNOSBridge:
             if entropy > context.previous_entropy:
                 return False
         return False
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
