@@ -207,6 +207,7 @@ cython_debug/
 logs/
 results/
 workspace/
+sandbox_repo/
 
 # rnos-query index (local vector DB)
 .rnos-query/
