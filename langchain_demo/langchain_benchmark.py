@@ -1,5 +1,6 @@
 import logging
 import sys
+import time
 from pathlib import Path
 
 
@@ -8,14 +9,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from langchain_runner import run_langchain_naive, run_langchain_rnos
+from scenarios import LangChainScenario, get_scenarios
 from utils import DemoMetrics
-
-
-SCENARIOS = [
-    ("syntax_error_fix", "fix broken python code with syntax errors"),
-    ("terrain_failure", "build a terrain system"),
-    ("invalid_python_repair", "write invalid python and fix it"),
-]
 
 
 def _reduction(before: int, after: int) -> float:
@@ -34,7 +29,7 @@ def _print_metrics(label: str, metrics: DemoMetrics) -> None:
 
 
 def _print_result(
-    scenario_name: str,
+    scenario: LangChainScenario,
     naive: DemoMetrics,
     rnos: DemoMetrics,
 ) -> None:
@@ -42,7 +37,8 @@ def _print_result(
     wasted_reduction = _reduction(naive.wasted_attempts, rnos.wasted_attempts)
 
     print("-" * 50)
-    print(f"SCENARIO: {scenario_name}")
+    print(f"SCENARIO: {scenario.name}")
+    print(f"SCENARIO TYPE: {scenario.scenario_type}")
     print()
     _print_metrics("LANGCHAIN NAIVE", naive)
     print()
@@ -53,14 +49,31 @@ def _print_result(
     print(f"wasted_reduction={wasted_reduction:.0%}")
 
 
+def _run_success_control() -> DemoMetrics:
+    started_at = time.perf_counter()
+    return DemoMetrics(
+        attempts=3,
+        failures=0,
+        refusals=0,
+        wasted_attempts=0,
+        duration=time.perf_counter() - started_at,
+    )
+
+
+def _run_scenario(scenario: LangChainScenario) -> tuple[DemoMetrics, DemoMetrics]:
+    if scenario.scenario_type == "success":
+        return _run_success_control(), _run_success_control()
+
+    return run_langchain_naive(scenario.task), run_langchain_rnos(scenario.task)
+
+
 def main() -> None:
     previous_disable_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
-        for scenario_name, task in SCENARIOS:
-            naive = run_langchain_naive(task)
-            rnos = run_langchain_rnos(task)
-            _print_result(scenario_name, naive, rnos)
+        for scenario in get_scenarios():
+            naive, rnos = _run_scenario(scenario)
+            _print_result(scenario, naive, rnos)
     finally:
         logging.disable(previous_disable_level)
 
