@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 import difflib
 import re
@@ -53,6 +54,8 @@ class RealLoopState:
     previous_failures: int | None = None
     previous_entropy: float | None = None
     retry_limit: int = 2
+    retry_budget: int = 2
+    prev_failures: int | None = None
     recovery_attempts: int = 0
     max_recovery_attempts: int = 3
     last_failure_type: str = ""
@@ -61,6 +64,7 @@ class RealLoopState:
     recovery_guidance: list[str] = field(default_factory=list)
     recovery_feedback: list[str] = field(default_factory=list)
     latest_validation_output: str = ""
+    last_actions: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=3))
     plan_texts: list[str] = field(default_factory=list)
     targets: list[str] = field(default_factory=list)
     risk_scores: list[float] = field(default_factory=list)
@@ -222,6 +226,9 @@ def run_real_scenario(
             report = _preflight_patch(repo, plan)
             context = _build_context(plan, report, state)
             decision = rnos.evaluate(context)
+            repeat_refusal = _repeat_refusal(plan, state)
+            if mode == "rnos" and repeat_refusal is not None:
+                decision = repeat_refusal
 
             if mode == "rnos" and decision.action == "REFUSE":
                 refusal_step = step
@@ -253,11 +260,25 @@ def run_real_scenario(
             if mode == "rnos" and decision.action == "DEGRADE":
                 executable = _constrain_plan(plan)
             elif mode == "rnos" and decision.action == "RECOVER":
+                if state.retry_budget <= 0:
+                    decision = GateDecision(
+                        action="REFUSE",
+                        entropy=decision.entropy,
+                        trust=decision.trust,
+                        reasons=("no improvement / budget exhausted",),
+                        constraints={"execute": False},
+                        failure_type=decision.failure_type,
+                        improvement=decision.improvement,
+                    )
+                    refusal_step = step
+                    _emit_real_event(event_stream, scenario.name, mode, step, plan, decision, context)
+                    break
                 executable = _recover_plan(plan, state, report)
                 _emit_recovery_event(event_stream, scenario.name, mode, step, plan, decision, context)
             result = _execute_real(repo, test_runner, executable)
             validation = result.test_result if result.test_result is not None else test_runner.run()
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
+            _emit_retry_budget_event(event_stream, scenario.name, mode, step, state)
 
             if not validation.success:
                 wasted += 1
@@ -379,6 +400,7 @@ def _preflight_patch(repo: RepoAdapter, plan: RealPlan) -> PatchReport:
     if plan.action not in {"apply_patch", "edit_file"}:
         return PatchReport()
     try:
+        _assert_patch_sane(repo, plan)
         return repo.tools.apply_patch(plan.diff, dry_run=True)
     except SandboxViolation:
         return PatchReport(
@@ -388,6 +410,23 @@ def _preflight_patch(repo: RepoAdapter, plan: RealPlan) -> PatchReport:
             risky_edit=True,
             destructive=False,
         )
+
+
+def _assert_patch_sane(repo: RepoAdapter, plan: RealPlan) -> None:
+    if plan.action not in {"apply_patch", "edit_file"}:
+        return
+    if len(plan.diff) > 12000:
+        raise SandboxViolation("patch exceeds recovery sanity size limit")
+    if "--- " not in plan.diff or "+++ " not in plan.diff or "@@" not in plan.diff:
+        raise SandboxViolation("patch missing unified diff headers")
+    target = plan.target.strip()
+    if target:
+        resolved = (repo.root / target).resolve()
+        root = repo.root.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise SandboxViolation(f"patch target escapes sandbox: {target}")
+        if not resolved.exists():
+            raise SandboxViolation(f"patch target does not exist: {target}")
 
 
 def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) -> dict[str, float | int | bool]:
@@ -501,7 +540,47 @@ def _recover_plan(plan: RealPlan, state: RealLoopState, report: PatchReport) -> 
         return RealPlan("read_file", f"recovery scope reduction for: {plan.description}", target=original_target)
     if original_target and plan.target != original_target:
         return RealPlan("read_file", f"recovery redirect to original target for: {plan.description}", target=original_target)
-    return plan
+    return RealPlan(
+        action=plan.action,
+        description=f"single-action recovery: {plan.description}",
+        target=original_target or plan.target,
+        diff=_limit_hunks(_enforce_single_file_diff(plan.diff, original_target or plan.target), max_hunks=1),
+    )
+
+
+def _enforce_single_file_diff(diff: str, target: str) -> str:
+    if not target:
+        return diff
+    lines = diff.splitlines(keepends=True)
+    kept: list[str] = []
+    include = False
+    for line in lines:
+        if line.startswith("--- "):
+            include = _clean_diff_path(line[4:].strip()) == target
+        if include:
+            kept.append(line)
+    return "".join(kept) if kept else diff
+
+
+def _limit_hunks(diff: str, *, max_hunks: int) -> str:
+    lines = diff.splitlines(keepends=True)
+    kept: list[str] = []
+    hunk_count = 0
+    for line in lines:
+        if line.startswith("@@"):
+            hunk_count += 1
+        if hunk_count <= max_hunks:
+            kept.append(line)
+        elif line.startswith("--- "):
+            break
+    return "".join(kept)
+
+
+def _clean_diff_path(raw: str) -> str:
+    path = raw.split("\t", 1)[0].strip()
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
 
 
 def _original_target(state: RealLoopState, plan: RealPlan) -> str:
@@ -532,6 +611,50 @@ def _update_state(
     state.risk_scores.append(_tool_risk(plan, result.patch_report, state))
     state.previous_failures = previous_failures
     state.previous_entropy = decision.entropy
+    state.last_actions.append(_action_signature(plan))
+    _update_retry_budget(state, validation.failures, decision.failure_type)
+
+
+def _action_signature(plan: RealPlan) -> tuple[str, str]:
+    return (plan.action, plan.target)
+
+
+def _repeat_refusal(plan: RealPlan, state: RealLoopState) -> GateDecision | None:
+    if state.validation_failures <= 0 or state.retry_budget > 0:
+        return None
+    sig = _action_signature(plan)
+    last_two = list(state.last_actions)[-2:]
+    if len(last_two) == 2 and last_two == [sig, sig]:
+        return GateDecision(
+            action="REFUSE",
+            entropy=max(state.previous_entropy or 0.0, 7.0),
+            trust=0.0,
+            reasons=("repeating identical action without improvement",),
+            constraints={"execute": False},
+            failure_type="retry_loop",
+            improvement=False,
+        )
+    return None
+
+
+def _update_retry_budget(state: RealLoopState, failures: int, failure_type: str) -> None:
+    if failures <= 0 and state.prev_failures is None:
+        state.retry_budget = state.retry_limit
+        return
+    if state.prev_failures is None:
+        state.prev_failures = failures
+        state.retry_budget = state.retry_limit
+        return
+    if failure_type == "malformed_output" and failures >= state.prev_failures:
+        state.prev_failures = failures
+        return
+    if failures < state.prev_failures:
+        state.retry_budget += 1
+    elif failures == state.prev_failures:
+        state.retry_budget -= 1
+    else:
+        state.retry_budget = 0
+    state.prev_failures = failures
 
 
 def _emit_real_event(
@@ -591,6 +714,35 @@ def _emit_recovery_event(
             "failure_type": decision.failure_type,
             "improvement": decision.improvement,
             "reason": "; ".join(decision.reasons),
+        }
+    )
+
+
+def _emit_retry_budget_event(
+    event_stream: EventStream,
+    scenario_name: str,
+    mode: str,
+    step: int,
+    state: RealLoopState,
+) -> None:
+    event_stream.emit(
+        {
+            "type": "retry_budget",
+            "scenario": scenario_name,
+            "mode": mode,
+            "step": step,
+            "action": "update_retry_budget",
+            "target": "",
+            "entropy": state.previous_entropy or 0.0,
+            "drift_score": 0.0,
+            "tool_risk": 0.0,
+            "validation_failures": state.validation_failures,
+            "files_modified": len(state.files_modified),
+            "lines_changed": state.lines_changed,
+            "decision": "ALLOW",
+            "reason": "gain-based retry budget updated",
+            "retry_budget": state.retry_budget,
+            "prev_failures": state.prev_failures,
         }
     )
 

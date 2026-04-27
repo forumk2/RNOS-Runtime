@@ -16,6 +16,10 @@ class PlanLike(Protocol):
     diff: str
 
 
+class MalformedOutputError(ValueError):
+    """Raised when an LM response cannot be parsed into one safe action."""
+
+
 @dataclass(frozen=True)
 class LMAgentConfig:
     base_url: str = field(default_factory=lambda: os.getenv("RNOS_LM_BASE_URL", "http://127.0.0.1:1234/v1"))
@@ -46,19 +50,29 @@ class LMAgent:
         self._client = self._build_client()
 
     def plan(self, state: Any) -> PlanLike | None:
-        payload = self._request_plan(state)
+        last_err: Exception | None = None
+        schema_feedback = ""
+        for _ in range(2):
+            try:
+                payload = self._request_plan(state, schema_feedback=schema_feedback)
+                return self._plan_from_payload(payload)
+            except (MalformedOutputError, ValueError, json.JSONDecodeError) as exc:
+                last_err = exc
+                schema_feedback = "Return ONLY valid JSON matching the schema. No prose. Single action."
+        raise MalformedOutputError(str(last_err) if last_err else "LM agent returned malformed output")
+
+    def _plan_from_payload(self, payload: dict[str, Any]) -> PlanLike | None:
+        _parse_plan_strict(payload)
         action = str(payload.get("action", "")).strip()
-        if action not in self.allowed_actions:
-            raise ValueError(f"LM agent returned unsupported action: {action!r}")
         if action == "finish":
             return None
 
         target = str(payload.get("target", "")).strip()
         if action in {"read_file", "edit_file"} and not target:
-            raise ValueError(f"LM agent action {action} requires a target")
+            raise MalformedOutputError(f"LM agent action {action} requires a target")
         _validate_relative_target(target)
         if action == "edit_file" and not str(payload.get("diff", "")).lstrip().startswith("--- "):
-            raise ValueError("LM agent edit_file action requires a unified diff")
+            raise MalformedOutputError("LM agent edit_file action requires a unified diff")
 
         return self.plan_type(
             action=action,
@@ -79,13 +93,13 @@ class LMAgent:
             timeout=self.config.timeout,
         )
 
-    def _request_plan(self, state: Any) -> dict[str, Any]:
+    def _request_plan(self, state: Any, *, schema_feedback: str = "") -> dict[str, Any]:
         response = self._client.chat.completions.create(
             model=self.config.model,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             messages=[
-                {"role": "system", "content": self._system_prompt(state)},
+                {"role": "system", "content": self._system_prompt(state, schema_feedback=schema_feedback)},
                 {"role": "user", "content": json.dumps(self._state_payload(state), sort_keys=True)},
             ],
             response_format={
@@ -112,10 +126,10 @@ class LMAgent:
         )
         content = response.choices[0].message.content
         if not content:
-            raise ValueError("LM agent returned empty content")
+            raise MalformedOutputError("LM agent returned empty content")
         return _parse_json_object(content)
 
-    def _system_prompt(self, state: Any) -> str:
+    def _system_prompt(self, state: Any, *, schema_feedback: str = "") -> str:
         prompt = (
             "You are an RNOS-controlled coding agent. Return JSON only. "
             "Never include markdown, prose, shell commands, or comments outside JSON. "
@@ -132,6 +146,8 @@ class LMAgent:
                 "Do not choose read_file again for the same target after a failed test. "
                 "Prefer edit_file with the smallest valid unified diff; choose run_tests only after a patch was applied."
             )
+        if schema_feedback:
+            prompt = f"{prompt}\n\n{schema_feedback}"
         return prompt
 
     def _state_payload(self, state: Any) -> dict[str, Any]:
@@ -155,11 +171,21 @@ class LMAgent:
 def _parse_json_object(content: str) -> dict[str, Any]:
     stripped = content.strip()
     if not stripped.startswith("{") or not stripped.endswith("}"):
-        raise ValueError("LM agent must return a single JSON object")
+        raise MalformedOutputError("LM agent must return a single JSON object")
     parsed = json.loads(stripped)
     if not isinstance(parsed, dict):
-        raise ValueError("LM agent JSON response must be an object")
+        raise MalformedOutputError("LM agent JSON response must be an object")
     return parsed
+
+
+def _parse_plan_strict(payload: dict[str, Any]) -> None:
+    required = {"action", "target", "description", "diff"}
+    if set(payload) != required:
+        raise MalformedOutputError("LM agent JSON must contain exactly action, target, description, diff")
+    if not all(isinstance(payload[key], str) for key in required):
+        raise MalformedOutputError("LM agent JSON fields must all be strings")
+    if payload["action"].strip() not in LMAgent.allowed_actions:
+        raise MalformedOutputError(f"LM agent returned unsupported action: {payload['action']!r}")
 
 
 def _validate_relative_target(target: str) -> None:
@@ -167,7 +193,7 @@ def _validate_relative_target(target: str) -> None:
         return
     path = Path(target)
     if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"LM agent target escapes sandbox: {target}")
+        raise MalformedOutputError(f"LM agent target escapes sandbox: {target}")
 
 
 def _readable_files(repo_root: Path) -> dict[str, str]:

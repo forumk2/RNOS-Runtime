@@ -26,9 +26,11 @@ from agent_runtime.real_loop.real_runner import (
     _constrain_plan,
     _emit_real_event,
     _emit_recovery_event,
+    _emit_retry_budget_event,
     _execute_real,
     _preflight_patch,
     _recover_plan,
+    _repeat_refusal,
     _tool_risk,
     _update_state,
 )
@@ -163,6 +165,55 @@ def run_recovery_test(
                         "recovery_attempts": state.recovery_attempts + 1,
                     },
                 )
+                if state.recovery_attempts >= state.max_recovery_attempts:
+                    refused = True
+                    refusal_step = step
+                    metrics.record_refusal(step)
+                    event_stream.emit(
+                        {
+                            "scenario": scenario.name,
+                            "mode": "rnos_tuned",
+                            "step": step,
+                            "action": plan.action,
+                            "target": plan.target,
+                            "entropy": float(context.get("entropy", 0.0)),
+                            "drift_score": float(context.get("drift_score", 0.0)),
+                            "tool_risk": float(context.get("tool_risk", 0.0)),
+                            "validation_failures": int(context.get("validation_failures", 0)),
+                            "files_modified": int(context.get("files_modified", 0)),
+                            "lines_changed": int(context.get("lines_changed", 0)),
+                            "decision": "REFUSE",
+                            "failure_type": "malformed_output",
+                            "improvement": False,
+                            "reason": "malformed output recovery budget exhausted",
+                        }
+                    )
+                    break
+                state.recovery_attempts += 1
+                state.retry_count += 1
+                state.validation_failures += 1
+                metrics.record_recovery_attempt()
+                event_stream.emit(
+                    {
+                        "type": "recovery_event",
+                        "scenario": scenario.name,
+                        "mode": "rnos_tuned",
+                        "step": step,
+                        "action": plan.action,
+                        "target": plan.target,
+                        "entropy": float(context.get("entropy", 0.0)),
+                        "drift_score": float(context.get("drift_score", 0.0)),
+                        "tool_risk": float(context.get("tool_risk", 0.0)),
+                        "validation_failures": state.validation_failures,
+                        "files_modified": int(context.get("files_modified", 0)),
+                        "lines_changed": int(context.get("lines_changed", 0)),
+                        "decision": "RECOVER",
+                        "failure_type": "malformed_output",
+                        "improvement": None,
+                        "reason": "patch sanity failed; strict schema feedback injected",
+                    }
+                )
+                continue
 
             tuning = tuner.adjust(context, metrics)
             if tuning.changed:
@@ -174,12 +225,15 @@ def run_recovery_test(
                     state.recovery_guidance.append("Strict JSON schema is mandatory; return one valid JSON object only.")
 
             decision = _evaluate_adaptive(context, tuning.profile)
+            repeat_refusal = _repeat_refusal(plan, state)
+            if repeat_refusal is not None:
+                decision = repeat_refusal
             if decision.action == "RECOVER":
-                if state.recovery_attempts >= state.max_recovery_attempts:
+                if state.recovery_attempts >= state.max_recovery_attempts or state.retry_budget <= 0:
                     refused = True
                     refusal_step = step
                     metrics.record_refusal(step)
-                    state.recovery_guidance.append("Recovery limit reached; refusing further retries.")
+                    state.recovery_guidance.append("Recovery budget exhausted; refusing further retries.")
                     _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, plan, decision, context)
                     break
                 state.recovery_attempts += 1
@@ -207,6 +261,7 @@ def run_recovery_test(
             validation = result.test_result if result.test_result is not None else test_runner.run()
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
             _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, executable, decision, context)
+            _emit_retry_budget_event(event_stream, scenario.name, "rnos_tuned", step, state)
 
             if validation.success:
                 recovered = state.validation_failures > 0 or metrics.degradations > 0 or metrics.recovery_attempts > 0
@@ -265,7 +320,10 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
     retry_count = int(context.get("retry_count", 0))
     failures = int(context.get("validation_failures", 0))
     retry_limit = min(profile.retry_limit, int(context.get("max_recovery_attempts", profile.retry_limit)))
-    destructive = bool(context.get("destructive_action", False)) or tool_risk >= profile.tool_risk_threshold
+    malformed = bool(context.get("malformed_output", False))
+    destructive = bool(context.get("destructive_action", False)) or (
+        tool_risk >= profile.tool_risk_threshold and not malformed
+    )
     if retry_count > profile.retry_limit or failures > profile.retry_limit + 1:
         context = {**context, "entropy": max(float(context.get("entropy", 0.0)), profile.entropy_threshold)}
     if drift >= profile.drift_threshold:
@@ -280,7 +338,7 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
             destructive_action=destructive,
             risk_escalation=bool(context.get("risk_escalation", False)),
             retry_limit=retry_limit,
-            malformed_output=bool(context.get("malformed_output", False)),
+            malformed_output=malformed,
             previous_failures=(
                 int(context["previous_failures"])
                 if context.get("previous_failures") is not None
@@ -368,6 +426,7 @@ def _emit_feedback_event(
             "improvement": None,
             "reason": "structured recovery feedback injected",
             "feedback": feedback,
+            "feedback_level": int(failure_context.get("recovery_attempts", 0)),
             "failure_context": dict(failure_context),
         }
     )

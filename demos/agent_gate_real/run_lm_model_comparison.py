@@ -285,7 +285,10 @@ def _failure_type_counts(events: tuple[dict[str, Any], ...]) -> dict[str, int]:
             counts["malformed_output"] += 1
         if failure_type == "fatal_risk" or risk >= 8.5:
             counts["high_risk_action"] += 1
-        if "retry" in reason or "no improvement" in reason:
+        if failure_type == "retry_loop" or (
+            event.get("decision") == "REFUSE"
+            and ("repeating identical" in reason or "no improvement" in reason)
+        ):
             counts["retry_loop"] += 1
         if failure_type == "drift" or drift >= 4.5:
             counts["drift"] += 1
