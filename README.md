@@ -23,6 +23,32 @@ RNOS terminated at step 4. An unprotected baseline ran all 20 steps; 18 failed. 
 
 ---
 
+## Live Studio Streaming
+
+RNOS Runtime can stream local-only events into RNOS Studio's Log Viewer tab. Live mode is additive: normal JSON log generation still runs, and demos continue to work if no live server is running.
+
+Install live server dependencies when needed:
+
+```bash
+pip install fastapi uvicorn
+```
+
+Start the local live event server:
+
+```bash
+python -m agent_runtime.live.live_server --host 127.0.0.1 --port 8765
+```
+
+Run a demo with live publishing enabled:
+
+```bash
+python demos/agent_gate_real/run_real_demo.py --live
+```
+
+Then open RNOS Studio, switch to the Log Viewer tab, click `Connect Live`, and watch runtime events appear in the unified timeline, chart, and inspector.
+
+---
+
 ## 🧪 Proof + CI Gate
 
 **RNOS is a control system that detects instability and stops unsafe execution before collapse propagates.**
@@ -739,4 +765,3 @@ MIT
 ## Author
 
 Rowan Ashford
-

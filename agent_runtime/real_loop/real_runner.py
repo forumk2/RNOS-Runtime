@@ -10,6 +10,7 @@ from typing import Literal
 from agent_runtime.event_formatter import format_timeline
 from agent_runtime.event_logger import save_json
 from agent_runtime.event_stream import EventStream
+from agent_runtime.live.session import LiveSession
 from agent_runtime.rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 
 from .patcher import PatchReport
@@ -130,7 +131,13 @@ class RealRNOSGate:
         )
 
 
-def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
+def run_real_scenario(
+    scenario: RealScenario,
+    *,
+    mode: str,
+    live: bool = False,
+    session: LiveSession | None = None,
+) -> RealModeResult:
     if mode not in {"naive", "rnos"}:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -141,7 +148,7 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
     rnos = RealRNOSGate()
     state = RealLoopState()
     trace: list[RealStepTrace] = []
-    event_stream = EventStream()
+    event_stream = EventStream(live=live, session=session)
     wasted = 0
     refusal_step: int | None = None
     destructive_prevented = 0
@@ -233,12 +240,13 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
     )
 
 
-def run_real_benchmark(scenarios: list[RealScenario]) -> list[RealScenarioComparison]:
+def run_real_benchmark(scenarios: list[RealScenario], *, live: bool = False) -> list[RealScenarioComparison]:
+    session = LiveSession() if live else None
     return [
         RealScenarioComparison(
             scenario=scenario,
-            naive=run_real_scenario(scenario, mode="naive"),
-            rnos=run_real_scenario(scenario, mode="rnos"),
+            naive=run_real_scenario(scenario, mode="naive", live=live, session=session),
+            rnos=run_real_scenario(scenario, mode="rnos", live=live, session=session),
         )
         for scenario in scenarios
     ]

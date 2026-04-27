@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -18,8 +19,12 @@ from agent_runtime.runner import (
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Run the RNOS Agent Gate benchmark demo.")
+    parser.add_argument("--live", action="store_true", help="Publish events to the local RNOS live server.")
+    args = parser.parse_args()
+
     scenarios = default_agent_gate_scenarios()
-    comparisons = run_agent_gate_benchmark(scenarios)
+    comparisons = run_agent_gate_benchmark(scenarios, live=args.live)
     print("RNOS Agent Gate Benchmark")
     print("=========================")
     print()

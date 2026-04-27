@@ -21,6 +21,10 @@ query = [
     "click>=8.1.0",
     "gitpython>=3.1.0",
 ]
+live = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+]
 
 [project.scripts]
 rnos-query = "rnos_query.cli:cli"

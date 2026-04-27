@@ -8,6 +8,7 @@ from .drift_model import DriftAssessment, assess_drift
 from .event_formatter import format_timeline
 from .event_logger import save_json
 from .event_stream import EventStream
+from .live.session import LiveSession
 from .risk_model import RiskAssessment, assess_tool_risk
 from .rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 from .tool_executor import ToolExecutionResult, ToolExecutor
@@ -192,7 +193,13 @@ class ScenarioComparison:
     rnos: ModeRunResult
 
 
-def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResult:
+def run_agent_gate_scenario(
+    scenario: ScenarioSpec,
+    *,
+    mode: str,
+    live: bool = False,
+    session: LiveSession | None = None,
+) -> ModeRunResult:
     """Run one deterministic scenario in either naive or RNOS-gated mode."""
 
     if mode not in {"naive", "rnos"}:
@@ -207,7 +214,7 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
     risk_scores: list[float] = []
     recent_errors: list[str] = []
     trace: list[StepTrace] = []
-    event_stream = EventStream()
+    event_stream = EventStream(live=live, session=session)
     wasted = 0
     refusal_step: int | None = None
     peak_entropy = 0.0
@@ -323,16 +330,22 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
     )
 
 
-def compare_agent_gate_scenario(scenario: ScenarioSpec) -> ScenarioComparison:
+def compare_agent_gate_scenario(
+    scenario: ScenarioSpec,
+    *,
+    live: bool = False,
+    session: LiveSession | None = None,
+) -> ScenarioComparison:
     return ScenarioComparison(
         scenario=scenario,
-        naive=run_agent_gate_scenario(scenario, mode="naive"),
-        rnos=run_agent_gate_scenario(scenario, mode="rnos"),
+        naive=run_agent_gate_scenario(scenario, mode="naive", live=live, session=session),
+        rnos=run_agent_gate_scenario(scenario, mode="rnos", live=live, session=session),
     )
 
 
-def run_agent_gate_benchmark(scenarios: list[ScenarioSpec]) -> list[ScenarioComparison]:
-    return [compare_agent_gate_scenario(scenario) for scenario in scenarios]
+def run_agent_gate_benchmark(scenarios: list[ScenarioSpec], *, live: bool = False) -> list[ScenarioComparison]:
+    session = LiveSession() if live else None
+    return [compare_agent_gate_scenario(scenario, live=live, session=session) for scenario in scenarios]
 
 
 def default_agent_gate_scenarios() -> list[ScenarioSpec]:
