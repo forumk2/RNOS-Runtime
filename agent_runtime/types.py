@@ -23,6 +23,9 @@ class ExecutionResult:
     artifact_path: Optional[str] = None
     ast_fingerprint: Optional[str] = None
     ast_similarity_to_previous: Optional[float] = None
+    ast_tokens: Optional[List[str]] = None
+    ast_progress_score: Optional[float] = None
+    ast_change_type: Optional[str] = None
     failure_type: Optional[str] = None
 
 

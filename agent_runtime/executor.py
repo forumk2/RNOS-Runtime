@@ -1,5 +1,6 @@
 import logging
 
+from .ast_diff import flatten_ast
 from .ast_similarity import ast_fingerprint
 from .types import ExecutionResult
 from .utils import ensure_workspace, step_number
@@ -54,6 +55,7 @@ def execute_step(step: str) -> ExecutionResult:
             output=f"wrote {target}",
             artifact_path=str(target),
             ast_fingerprint=ast_fingerprint(source),
+            ast_tokens=flatten_ast(source),
         )
     except OSError as exc:
         logger.exception("executor.failed")

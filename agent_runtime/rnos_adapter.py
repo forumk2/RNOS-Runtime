@@ -105,6 +105,20 @@ def compute_similarity(history: list[ExecutionResult]) -> float:
     )
 
 
+def compute_progress_score(history: list[ExecutionResult]) -> float:
+    for result in reversed(_recent(history)):
+        if result.ast_progress_score is not None:
+            return result.ast_progress_score
+    return 0.0
+
+
+def latest_change_type(history: list[ExecutionResult]) -> str:
+    for result in reversed(_recent(history)):
+        if result.ast_change_type:
+            return result.ast_change_type
+    return "unknown"
+
+
 def compute_trend(history: list[ExecutionResult]) -> float:
     window = _recent(history)
     if len(window) < 2:
@@ -139,9 +153,12 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     error_similarity = compute_error_similarity(history)
     ast_similarity = compute_ast_retry_similarity(history)
     similarity_score = compute_similarity(history)
+    progress_score = compute_progress_score(history)
+    change_type = latest_change_type(history)
     trend_score = compute_trend(history)
     instability_score = compute_instability(history)
     recent_failures = len(_failures(history))
+    latest_failure = bool(history and not history[-1].success)
 
     logger.info(
         "[RNOS METRICS]\n"
@@ -149,6 +166,8 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         "diversity=%.2f\n"
         "error_similarity=%.2f\n"
         "ast_similarity=%.2f\n"
+        "ast_progress=%.2f\n"
+        "change_type=%s\n"
         "similarity=%.2f\n"
         "trend=%.2f\n"
         "instability=%.2f",
@@ -156,21 +175,39 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         diversity_score,
         error_similarity,
         ast_similarity,
+        progress_score,
+        change_type,
         similarity_score,
         trend_score,
         instability_score,
     )
 
-    if similarity_score >= 0.85 and recent_failures >= 2:
+    if (
+        latest_failure
+        and similarity_score > 0.85
+        and progress_score < 0.1
+        and recent_failures >= 2
+    ):
         action = "refuse"
-        reason = "structural retry loop detected"
-    elif instability_score >= 0.75:
+        reason = "no structural progress"
+    elif (
+        latest_failure
+        and similarity_score > 0.75
+        and progress_score < 0.2
+        and recent_failures >= 2
+    ):
+        action = "refuse"
+        reason = "loop with minor variation"
+    elif instability_score > 0.75:
         action = "refuse"
         reason = "system unstable (high entropy)"
+    elif latest_failure and progress_score > 0.4:
+        action = "retry"
+        reason = "meaningful attempt, allow exploration"
     elif error_similarity > 0.6 and recent_failures >= 2:
         action = "refuse"
         reason = "stuck retry loop"
-    elif instability_score >= 0.4:
+    elif latest_failure and instability_score >= 0.4:
         action = "retry"
         reason = "degrading system"
     else:
