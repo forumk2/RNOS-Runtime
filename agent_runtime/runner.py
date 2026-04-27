@@ -1,5 +1,8 @@
+from dataclasses import replace
 import logging
+from pathlib import Path
 
+from .ast_similarity import ast_similarity_score
 from . import executor, planner, rnos_adapter, validator
 from .types import ExecutionResult, RNOSDecision, Task
 from .utils import cleanup_workspace
@@ -30,10 +33,33 @@ def _log_result(step: str, execution: ExecutionResult, validation: ExecutionResu
     )
 
 
+def _read_artifact_source(result: ExecutionResult) -> str | None:
+    if not result.artifact_path:
+        return None
+
+    try:
+        return Path(result.artifact_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _with_artifact_metadata(
+    validation: ExecutionResult,
+    execution: ExecutionResult,
+) -> ExecutionResult:
+    return replace(
+        validation,
+        artifact_path=validation.artifact_path or execution.artifact_path,
+        ast_fingerprint=validation.ast_fingerprint or execution.ast_fingerprint,
+        ast_similarity_to_previous=execution.ast_similarity_to_previous,
+    )
+
+
 def run_task(task: Task) -> list[ExecutionResult]:
     cleanup_workspace()
     plan = planner.plan_task(task)
     history: list[ExecutionResult] = []
+    previous_source: str | None = None
 
     logger.info("runner.plan")
     for step in plan.steps:
@@ -41,8 +67,22 @@ def run_task(task: Task) -> list[ExecutionResult]:
 
     for step in plan.steps:
         execution = executor.execute_step(step)
+        current_source = _read_artifact_source(execution)
+        if previous_source is not None and current_source is not None:
+            execution = replace(
+                execution,
+                ast_similarity_to_previous=ast_similarity_score(
+                    previous_source,
+                    current_source,
+                ),
+            )
+
         validation = validator.validate()
+        validation = _with_artifact_metadata(validation, execution)
         history.append(validation)
+
+        if current_source is not None:
+            previous_source = current_source
 
         decision = rnos_adapter.evaluate_state(history)
         _log_result(step, execution, validation, decision)

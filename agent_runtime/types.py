@@ -20,6 +20,10 @@ class ExecutionResult:
     success: bool
     output: str
     error: Optional[str] = None
+    artifact_path: Optional[str] = None
+    ast_fingerprint: Optional[str] = None
+    ast_similarity_to_previous: Optional[float] = None
+    failure_type: Optional[str] = None
 
 
 @dataclass(frozen=True)

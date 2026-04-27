@@ -1,5 +1,6 @@
 import logging
 
+from .ast_similarity import ast_fingerprint
 from .types import ExecutionResult
 from .utils import ensure_workspace, step_number
 
@@ -38,14 +39,22 @@ def execute_step(step: str) -> ExecutionResult:
 
     try:
         unstable = number >= 3 or "invalid" in step.lower() or "unstable" in step.lower()
-        target.write_text(
+        source = (
             _render_invalid_module(step, number)
             if unstable
-            else _render_valid_module(step, number),
+            else _render_valid_module(step, number)
+        )
+        target.write_text(
+            source,
             encoding="utf-8",
         )
         logger.info("executor.wrote_file", extra={"path": str(target)})
-        return ExecutionResult(success=True, output=f"wrote {target}")
+        return ExecutionResult(
+            success=True,
+            output=f"wrote {target}",
+            artifact_path=str(target),
+            ast_fingerprint=ast_fingerprint(source),
+        )
     except OSError as exc:
         logger.exception("executor.failed")
         return ExecutionResult(success=False, output="", error=str(exc))

@@ -62,11 +62,13 @@ def compute_diversity(history: list[ExecutionResult]) -> float:
     if not failures:
         return 0.0
 
-    error_types = {extract_error_type(result.error) for result in failures}
+    error_types = {
+        result.failure_type or extract_error_type(result.error) for result in failures
+    }
     return len(error_types) / len(failures)
 
 
-def compute_similarity(history: list[ExecutionResult]) -> float:
+def compute_error_similarity(history: list[ExecutionResult]) -> float:
     failures = _failures(history)
     if not failures:
         return 0.0
@@ -76,6 +78,31 @@ def compute_similarity(history: list[ExecutionResult]) -> float:
         1 for error in recent_errors if recent_errors.count(error) > 1
     )
     return repeated_count / len(failures)
+
+
+def compute_ast_retry_similarity(history: list[ExecutionResult]) -> float:
+    window = _recent(history)
+    scores = []
+    for index, result in enumerate(window):
+        if index == 0:
+            continue
+        previous = window[index - 1]
+        if result.success or previous.success:
+            continue
+        if result.ast_similarity_to_previous is not None:
+            scores.append(result.ast_similarity_to_previous)
+
+    if not scores:
+        return 0.0
+
+    return sum(scores) / len(scores)
+
+
+def compute_similarity(history: list[ExecutionResult]) -> float:
+    return max(
+        compute_error_similarity(history),
+        compute_ast_retry_similarity(history),
+    )
 
 
 def compute_trend(history: list[ExecutionResult]) -> float:
@@ -109,28 +136,38 @@ def compute_instability(history: list[ExecutionResult]) -> float:
 def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     failure_rate = compute_failure_rate(history)
     diversity_score = compute_diversity(history)
+    error_similarity = compute_error_similarity(history)
+    ast_similarity = compute_ast_retry_similarity(history)
     similarity_score = compute_similarity(history)
     trend_score = compute_trend(history)
     instability_score = compute_instability(history)
+    recent_failures = len(_failures(history))
 
     logger.info(
         "[RNOS METRICS]\n"
         "failure_rate=%.2f\n"
         "diversity=%.2f\n"
+        "error_similarity=%.2f\n"
+        "ast_similarity=%.2f\n"
         "similarity=%.2f\n"
         "trend=%.2f\n"
         "instability=%.2f",
         failure_rate,
         diversity_score,
+        error_similarity,
+        ast_similarity,
         similarity_score,
         trend_score,
         instability_score,
     )
 
-    if instability_score >= 0.75:
+    if similarity_score >= 0.85 and recent_failures >= 2:
+        action = "refuse"
+        reason = "structural retry loop detected"
+    elif instability_score >= 0.75:
         action = "refuse"
         reason = "system unstable (high entropy)"
-    elif similarity_score > 0.6:
+    elif error_similarity > 0.6 and recent_failures >= 2:
         action = "refuse"
         reason = "stuck retry loop"
     elif instability_score >= 0.4:
