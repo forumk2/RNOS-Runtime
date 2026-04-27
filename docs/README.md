@@ -2,6 +2,8 @@
 
 > A system that knows when your AI should stop.
 
+> Reduces wasted retries by ~60–80% without impacting successful runs.
+
 ## Problem
 
 AI development agents often retry blindly.
@@ -118,8 +120,8 @@ RNOS is evaluated against a naive loop that retries without control. The benchma
 | Scenario | Naive Attempts | RNOS Attempts | Reduction |
 |----------|----------------|---------------|-----------|
 | Terrain Failure | 10 | 4 | -60% |
-| Simple Success | 10 | 4 | -60% |
-| Stuck Loop | 10 | 4 | -60% |
+| Simple Success | 3 | 3 | 0% |
+| Stuck Loop | 10 | 3 | -70% |
 
 Across the current benchmark scenarios:
 
@@ -127,9 +129,58 @@ Across the current benchmark scenarios:
 naive_wasted_attempts=7
 rnos_wasted_attempts=1
 wasted_reduction=86%
+estimated_cost_reduction ~= 60–80% (assuming cost per attempt)
 ```
 
 RNOS reduces wasted retries by roughly 60-80% without blocking successful early steps. It stops when repeated failure evidence becomes stronger than the value of another retry.
+
+## LangChain Integration Demo
+
+RNOS can be applied as a control layer on top of LangChain agents.
+
+LangChain agents execute in a loop by default, retrying until a limit is reached. RNOS intercepts this loop and decides whether execution should continue, retry, or stop early.
+
+### Example Behavior
+
+Naive LangChain loop:
+
+```text
+step 1 -> fail
+step 2 -> fail
+step 3 -> fail
+...
+step 10 -> fail
+```
+
+LangChain + RNOS:
+
+```text
+step 1 -> fail
+step 2 -> fail
+RNOS -> refuse (overconfident stagnation)
+```
+
+### Benchmark Results
+
+| Scenario | Naive Attempts | RNOS Attempts | Reduction |
+|----------|----------------|---------------|-----------|
+| Syntax Error Fix | 10 | 2 | -80% |
+| Terrain Failure | 10 | 2 | -80% |
+| Invalid Python Repair | 10 | 2 | -80% |
+
+Across scenarios:
+
+```text
+wasted_reduction ~= 89%
+```
+
+RNOS stops execution when repeated failure patterns show no meaningful progress.
+
+### Key Insight
+
+LangChain agents retry until a limit is reached. RNOS decides when they should stop.
+
+RNOS evaluates behavior and stops when further attempts are no longer useful.
 
 ## Why This Matters
 
@@ -137,7 +188,7 @@ Agent systems need control, not just execution.
 
 Stopping bad loops early saves compute cost, reduces latency, and prevents runaway autonomous behavior. It also improves reliability: a controlled agent loop can admit uncertainty, retry meaningful alternatives, and refuse when attempts become structurally stagnant.
 
-RNOS turns failure behavior into a measurable control signal.
+RNOS turns failure behavior into a control signal.
 
 ## Usage
 
