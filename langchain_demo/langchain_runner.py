@@ -25,7 +25,12 @@ def run_langchain_naive(task: str, max_attempts: int = MAX_ATTEMPTS) -> DemoMetr
 
     for index in range(max_attempts):
         output = _invoke_agent(agent, task)
-        result = convert_to_execution_result(output, index)
+        previous_result = history[-1] if history else None
+        result = convert_to_execution_result(
+            output,
+            index,
+            previous_result=previous_result,
+        )
         result = replace(result, cevak=compute_cevak(result, history))
         history.append(result)
         print(f"[LANGCHAIN NAIVE] step={index + 1} success={result.success}")
@@ -41,7 +46,12 @@ def run_langchain_rnos(task: str, max_attempts: int = MAX_ATTEMPTS) -> DemoMetri
 
     for index in range(max_attempts):
         output = _invoke_agent(agent, task)
-        result = convert_to_execution_result(output, index)
+        previous_result = history[-1] if history else None
+        result = convert_to_execution_result(
+            output,
+            index,
+            previous_result=previous_result,
+        )
         result = replace(result, cevak=compute_cevak(result, history))
         history.append(result)
 

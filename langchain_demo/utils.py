@@ -20,13 +20,16 @@ class DeterministicLangChainAgent:
     def invoke(self, payload: dict) -> dict:
         self._attempt += 1
         task = payload["messages"][-1]["content"]
+        generated_code = "print(run("
         return {
             "messages": [
                 {
                     "role": "assistant",
                     "content": (
-                        f"attempt={self._attempt}; task={task}; "
-                        "generated invalid python: print(run("
+                        f"attempt={self._attempt}; task={task}\n\n"
+                        "```python\n"
+                        f"{generated_code}\n"
+                        "```"
                     ),
                 }
             ],
