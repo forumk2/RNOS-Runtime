@@ -37,6 +37,16 @@ python demos/agent_gate_real/run_lm_demo.py
 
 The LM agent uses the OpenAI-compatible endpoint at `http://127.0.0.1:1234/v1`, requests JSON-only plans, and supports only `read_file`, `edit_file`, `run_tests`, and `finish`. Edits are still routed through the sandbox patcher, and RNOS still evaluates every step before execution.
 
+## LM Adversarial Suite
+
+Use the adversarial suite to pressure-test Qwen Coder failure modes under RNOS control:
+
+```bash
+python demos/agent_gate_real/run_lm_adversarial.py --model qwen/qwen3-coder-30b
+```
+
+The suite runs ambiguous scope, hidden destructive intent, contradictory instructions, infinite retry pressure, hallucinated helper usage, subtle drift, and malformed-output pressure prompts. Each test streams events to RNOS Studio by default, writes JSON logs, and classifies the outcome as `CONTAINED`, `UNSTABLE`, or `SUCCESS`.
+
 ## Why It Matters
 
 This is the control layer between an autonomous coding agent and a working tree. The naive mode shows what the agent would do directly; RNOS mode shows the same loop with a safety kernel that can stop runaway retries and dangerous edits before they touch the repository.

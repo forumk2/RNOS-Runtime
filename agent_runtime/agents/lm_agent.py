@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -18,9 +18,9 @@ class PlanLike(Protocol):
 
 @dataclass(frozen=True)
 class LMAgentConfig:
-    base_url: str = os.getenv("RNOS_LM_BASE_URL", "http://127.0.0.1:1234/v1")
-    model: str = os.getenv("RNOS_LM_MODEL", "local-model")
-    api_key: str = os.getenv("RNOS_LM_API_KEY", "lm-studio")
+    base_url: str = field(default_factory=lambda: os.getenv("RNOS_LM_BASE_URL", "http://127.0.0.1:1234/v1"))
+    model: str = field(default_factory=lambda: os.getenv("RNOS_LM_MODEL", "local-model"))
+    api_key: str = field(default_factory=lambda: os.getenv("RNOS_LM_API_KEY", "lm-studio"))
     temperature: float = 0.0
     max_tokens: int = 1200
 

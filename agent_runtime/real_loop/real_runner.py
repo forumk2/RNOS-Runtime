@@ -160,7 +160,39 @@ def run_real_scenario(
 
     try:
         for step in range(1, max_steps + 1):
-            plan = agent.plan(state)
+            try:
+                plan = agent.plan(state)
+            except Exception as exc:
+                plan = RealPlan(
+                    action="edit_file",
+                    description=f"planner failure: {type(exc).__name__}: {exc}",
+                )
+                context = _planner_failure_context(state)
+                decision = rnos.evaluate(context)
+                refusal_step = step
+                destructive_prevented += 1
+                state.attempts += 1
+                _emit_real_event(
+                    event_stream,
+                    scenario.name,
+                    mode,
+                    step,
+                    plan,
+                    decision,
+                    context,
+                )
+                trace.append(
+                    RealStepTrace(
+                        step=step,
+                        action="planner_error",
+                        decision=decision.action,
+                        validation_success=None,
+                        files_modified=len(state.files_modified),
+                        lines_changed=state.lines_changed,
+                        reason=", ".join(decision.reasons),
+                    )
+                )
+                break
             if plan is None or plan.action == "finish":
                 break
 
@@ -334,8 +366,9 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
     tool_risk = _tool_risk(plan, report, state)
     drift_score = _drift_score(plan, state)
     risk_escalation = bool(state.risk_scores and tool_risk >= 6.0 and tool_risk > max(state.risk_scores[-3:]) + 2.0)
+    repeated_plan_count = state.plan_texts.count(plan.text)
     return {
-        "entropy": 0.0,
+        "entropy": min(repeated_plan_count * 2.5, 7.5),
         "retry_count": state.retry_count,
         "drift_score": drift_score,
         "tool_risk": tool_risk,
@@ -345,6 +378,21 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
         "blast_radius": _blast_radius(report),
         "destructive_action": report.destructive or report.risky_edit and tool_risk >= 9.0,
         "risk_escalation": risk_escalation,
+    }
+
+
+def _planner_failure_context(state: RealLoopState) -> dict[str, float | int | bool]:
+    return {
+        "entropy": 10.0,
+        "retry_count": state.retry_count,
+        "drift_score": 10.0,
+        "tool_risk": 10.0,
+        "validation_failures": state.validation_failures,
+        "files_modified": 0,
+        "lines_changed": 100,
+        "blast_radius": 10.0,
+        "destructive_action": True,
+        "risk_escalation": True,
     }
 
 
