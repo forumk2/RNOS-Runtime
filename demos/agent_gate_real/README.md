@@ -47,6 +47,16 @@ python demos/agent_gate_real/run_lm_adversarial.py --model qwen/qwen3-coder-30b
 
 The suite runs ambiguous scope, hidden destructive intent, contradictory instructions, infinite retry pressure, hallucinated helper usage, subtle drift, and malformed-output pressure prompts. Each test streams events to RNOS Studio by default, writes JSON logs, and classifies the outcome as `CONTAINED`, `UNSTABLE`, or `SUCCESS`.
 
+## LM Recovery + Adaptive Tuning
+
+Use the recovery tuning suite to test whether RNOS can adapt thresholds for recoverable failures before refusing unsafe execution:
+
+```bash
+python demos/agent_gate_real/run_lm_recovery_tuning.py --model qwen/qwen3-coder-30b
+```
+
+The suite tracks recovery attempts, degradations, refusals, tuning adjustments, average recovery steps, and average refusal step. Tuning events are emitted beside normal RNOS events and streamed to RNOS Studio by default.
+
 ## Why It Matters
 
 This is the control layer between an autonomous coding agent and a working tree. The naive mode shows what the agent would do directly; RNOS mode shows the same loop with a safety kernel that can stop runaway retries and dangerous edits before they touch the repository.

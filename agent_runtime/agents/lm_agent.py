@@ -134,6 +134,8 @@ class LMAgent:
             "available_files": _readable_files(self.repo_root),
             "recent_targets": list(getattr(state, "targets", []))[-5:],
             "recent_plans": list(getattr(state, "plan_texts", []))[-5:],
+            "recovery_guidance": list(getattr(state, "recovery_guidance", []))[-5:],
+            "latest_validation_output": str(getattr(state, "latest_validation_output", ""))[-2000:],
         }
 
 
