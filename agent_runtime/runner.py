@@ -273,7 +273,7 @@ def run_agent_gate_scenario(
             )
             break
 
-        constrained = mode == "rnos" and decision.action == "DEGRADE"
+        constrained = mode == "rnos" and decision.action in {"DEGRADE", "RECOVER"}
         executable_plan = constrain_plan(plan) if constrained else plan
         result = tool_executor.execute(executable_plan)
         validation = gate_validator.validate(result, recent_errors)
@@ -387,6 +387,9 @@ def _evaluate_gate(
         validation_failures=state.validation_failures,
         destructive_action=risk.destructive,
         risk_escalation=risk.escalation,
+        retry_limit=state.retry_limit,
+        previous_failures=state.previous_failures,
+        previous_entropy=state.previous_entropy,
     )
     return gate.evaluate(context)
 
@@ -399,6 +402,7 @@ def _update_state(
     decision: GateDecision,
 ) -> None:
     success = bool(validation["success"])
+    previous_failures = state.validation_failures
     state.attempts += 1
     state.retry_count = 0 if success else state.retry_count + 1
     if not success:
@@ -411,6 +415,8 @@ def _update_state(
     state.decisions.append(decision.action)
     if result.metadata.get("constrained_from"):
         state.degraded = True
+    state.previous_failures = previous_failures
+    state.previous_entropy = decision.entropy
 
 
 def _emit_agent_event(
@@ -443,6 +449,8 @@ def _emit_agent_event(
             "lines_changed": lines_changed,
             "decision": decision.action,
             "reason": "; ".join(decision.reasons),
+            "failure_type": decision.failure_type,
+            "improvement": decision.improvement,
         }
     )
 
@@ -454,6 +462,8 @@ def _allow_decision(decision: GateDecision) -> GateDecision:
         trust=decision.trust,
         reasons=("naive mode: RNOS not enforced",),
         constraints=decision.constraints,
+        failure_type=decision.failure_type,
+        improvement=decision.improvement,
     )
 
 
@@ -498,6 +508,6 @@ def _format_gate_events(result: ModeRunResult) -> str:
     events = [
         f"Step {trace.step} {trace.decision}"
         for trace in result.trace
-        if trace.decision in {"DEGRADE", "REFUSE"}
+        if trace.decision in {"DEGRADE", "RECOVER", "REFUSE"}
     ]
     return ", ".join(events) if events else "NONE"

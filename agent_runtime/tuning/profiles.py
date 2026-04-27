@@ -11,6 +11,7 @@ class TuningProfile:
     drift_threshold: float = 4.5
     retry_limit: int = 2
     tool_risk_threshold: float = 9.0
+    enforce_strict_format: bool = False
 
     min_entropy_threshold: float = 5.5
     max_entropy_threshold: float = 8.5
@@ -28,6 +29,7 @@ class TuningProfile:
         drift_delta: float = 0.0,
         retry_delta: int = 0,
         tool_risk_delta: float = 0.0,
+        enforce_strict_format: bool | None = None,
     ) -> "TuningProfile":
         return TuningProfile(
             entropy_threshold=_clamp(
@@ -51,6 +53,11 @@ class TuningProfile:
                 self.tool_risk_threshold + tool_risk_delta,
                 self.min_tool_risk_threshold,
                 self.max_tool_risk_threshold,
+            ),
+            enforce_strict_format=(
+                self.enforce_strict_format
+                if enforce_strict_format is None
+                else enforce_strict_format
             ),
         )
 

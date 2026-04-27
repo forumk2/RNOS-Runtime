@@ -50,6 +50,9 @@ class RealLoopState:
     attempts: int = 0
     retry_count: int = 0
     validation_failures: int = 0
+    previous_failures: int | None = None
+    previous_entropy: float | None = None
+    retry_limit: int = 2
     plan_texts: list[str] = field(default_factory=list)
     targets: list[str] = field(default_factory=list)
     risk_scores: list[float] = field(default_factory=list)
@@ -129,6 +132,18 @@ class RealRNOSGate:
                 validation_failures=int(context["validation_failures"]),
                 destructive_action=bool(context.get("destructive_action", False)),
                 risk_escalation=bool(context.get("risk_escalation", False)),
+                retry_limit=int(context.get("retry_limit", 2)),
+                malformed_output=bool(context.get("malformed_output", False)),
+                previous_failures=(
+                    int(context["previous_failures"])
+                    if context.get("previous_failures") is not None
+                    else None
+                ),
+                previous_entropy=(
+                    float(context["previous_entropy"])
+                    if context.get("previous_entropy") is not None
+                    else None
+                ),
             )
         )
 
@@ -226,7 +241,12 @@ def run_real_scenario(
                 )
                 break
 
-            executable = _constrain_plan(plan) if mode == "rnos" and decision.action == "DEGRADE" else plan
+            executable = plan
+            if mode == "rnos" and decision.action == "DEGRADE":
+                executable = _constrain_plan(plan)
+            elif mode == "rnos" and decision.action == "RECOVER":
+                executable = _recover_plan(plan, state, report)
+                _emit_recovery_event(event_stream, scenario.name, mode, step, plan, decision, context)
             result = _execute_real(repo, test_runner, executable)
             validation = result.test_result if result.test_result is not None else test_runner.run()
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
@@ -373,6 +393,10 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
         "drift_score": drift_score,
         "tool_risk": tool_risk,
         "validation_failures": state.validation_failures,
+        "previous_failures": state.previous_failures,
+        "previous_entropy": state.previous_entropy,
+        "retry_limit": state.retry_limit,
+        "malformed_output": report.destructive and report.lines_changed >= 100,
         "files_modified": len(report.files_modified),
         "lines_changed": report.lines_changed,
         "blast_radius": _blast_radius(report),
@@ -388,6 +412,10 @@ def _planner_failure_context(state: RealLoopState) -> dict[str, float | int | bo
         "drift_score": 10.0,
         "tool_risk": 10.0,
         "validation_failures": state.validation_failures,
+        "previous_failures": state.previous_failures,
+        "previous_entropy": state.previous_entropy,
+        "retry_limit": state.retry_limit,
+        "malformed_output": True,
         "files_modified": 0,
         "lines_changed": 100,
         "blast_radius": 10.0,
@@ -450,6 +478,28 @@ def _constrain_plan(plan: RealPlan) -> RealPlan:
     )
 
 
+def _recover_plan(plan: RealPlan, state: RealLoopState, report: PatchReport) -> RealPlan:
+    """Apply recovery-mode constraints without blocking safe focused retries."""
+
+    original_target = _original_target(state, plan)
+    if plan.action in {"read_file", "run_tests"}:
+        return plan
+    if plan.action not in {"apply_patch", "edit_file"}:
+        return RealPlan("read_file", f"recovery inspection for: {plan.description}", target=original_target)
+    if report.destructive or report.risky_edit or report.multi_file_edit or report.lines_changed > 30:
+        return RealPlan("read_file", f"recovery scope reduction for: {plan.description}", target=original_target)
+    if original_target and plan.target != original_target:
+        return RealPlan("read_file", f"recovery redirect to original target for: {plan.description}", target=original_target)
+    return plan
+
+
+def _original_target(state: RealLoopState, plan: RealPlan) -> str:
+    for target in state.targets:
+        if target:
+            return target
+    return plan.target
+
+
 def _update_state(
     state: RealLoopState,
     plan: RealPlan,
@@ -458,6 +508,7 @@ def _update_state(
     modified_files: tuple[str, ...],
     decision: GateDecision,
 ) -> None:
+    previous_failures = state.validation_failures
     state.attempts += 1
     state.retry_count = 0 if validation.success else state.retry_count + 1
     if not validation.success:
@@ -468,6 +519,8 @@ def _update_state(
     state.files_modified.update(modified_files)
     state.lines_changed += result.patch_report.lines_changed
     state.risk_scores.append(_tool_risk(plan, result.patch_report, state))
+    state.previous_failures = previous_failures
+    state.previous_entropy = decision.entropy
 
 
 def _emit_real_event(
@@ -494,6 +547,39 @@ def _emit_real_event(
             "lines_changed": int(context["lines_changed"]),
             "decision": decision.action,
             "reason": "; ".join(decision.reasons),
+            "failure_type": decision.failure_type,
+            "improvement": decision.improvement,
+        }
+    )
+
+
+def _emit_recovery_event(
+    event_stream: EventStream,
+    scenario_name: str,
+    mode: str,
+    step: int,
+    plan: RealPlan,
+    decision: GateDecision,
+    context: dict[str, float | int | bool],
+) -> None:
+    event_stream.emit(
+        {
+            "type": "recovery_event",
+            "scenario": scenario_name,
+            "mode": mode,
+            "step": step,
+            "action": plan.action,
+            "target": plan.target,
+            "entropy": decision.entropy,
+            "drift_score": float(context["drift_score"]),
+            "tool_risk": float(context["tool_risk"]),
+            "validation_failures": int(context["validation_failures"]),
+            "files_modified": int(context["files_modified"]),
+            "lines_changed": int(context["lines_changed"]),
+            "decision": "RECOVER",
+            "failure_type": decision.failure_type,
+            "improvement": decision.improvement,
+            "reason": "; ".join(decision.reasons),
         }
     )
 
@@ -505,6 +591,8 @@ def _allow_decision(decision: GateDecision) -> GateDecision:
         trust=decision.trust,
         reasons=("naive mode: RNOS not enforced",),
         constraints=decision.constraints,
+        failure_type=decision.failure_type,
+        improvement=decision.improvement,
     )
 
 
@@ -545,7 +633,11 @@ def _format_real_result(comparison: RealScenarioComparison) -> str:
 
 
 def _gate_events(result: RealModeResult) -> str:
-    events = [f"Step {item.step} {item.decision}" for item in result.trace if item.decision in {"DEGRADE", "REFUSE"}]
+    events = [
+        f"Step {item.step} {item.decision}"
+        for item in result.trace
+        if item.decision in {"DEGRADE", "RECOVER", "REFUSE"}
+    ]
     return ", ".join(events) if events else "NONE"
 
 

@@ -18,6 +18,9 @@ class RecoveryMetrics:
         self.degradations += 1
         self.recovery_attempts += 1
 
+    def record_recovery_attempt(self) -> None:
+        self.recovery_attempts += 1
+
     def record_recovery(self, step: int) -> None:
         self.successful_recoveries += 1
         self.resolution_steps.append(step)

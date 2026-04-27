@@ -25,14 +25,17 @@ from agent_runtime.real_loop.real_runner import (
     _build_context,
     _constrain_plan,
     _emit_real_event,
+    _emit_recovery_event,
     _execute_real,
     _preflight_patch,
+    _recover_plan,
     _tool_risk,
     _update_state,
 )
 from agent_runtime.real_loop.repo_adapter import RepoAdapter
 from agent_runtime.real_loop.test_runner import TestRunner
 from agent_runtime.rnos_bridge import RNOSBridge, RNOSContext
+from agent_runtime.tuning.classifier import classify_failure
 from agent_runtime.tuning.metrics import RecoveryMetrics
 from agent_runtime.tuning.tuner import RNOSTuner, TuningDecision
 
@@ -104,6 +107,7 @@ def run_recovery_test(
                 plan = agent.plan(state)
             except Exception as exc:
                 plan = RealPlan("edit_file", f"planner failure: {type(exc).__name__}: {exc}", target="parser.py")
+                report = _preflight_patch(repo, plan)
                 context = _planner_failure_context(state)
             else:
                 if plan is None or plan.action == "finish":
@@ -117,14 +121,22 @@ def run_recovery_test(
                 context["recoverable"] = True
                 context["blast_radius"] = _blast_radius(report)
                 context["tool_risk"] = _tool_risk(plan, report, state)
+            context["failure_type"] = classify_failure(context)
+            context["retry_limit"] = tuner.profile.retry_limit
 
             tuning = tuner.adjust(context, metrics)
             if tuning.changed:
                 tuning_adjustments += 1
+                state.retry_limit = tuning.profile.retry_limit
                 _emit_tuning_event(event_stream, scenario.name, step, tuning, context)
                 state.recovery_guidance.append(tuning.reason)
+                if tuning.profile.enforce_strict_format:
+                    state.recovery_guidance.append("Strict JSON schema is mandatory; return one valid JSON object only.")
 
             decision = _evaluate_adaptive(context, tuning.profile)
+            if decision.action == "RECOVER":
+                metrics.record_recovery_attempt()
+                state.recovery_guidance.append("RNOS recovery mode: one target file, minimal patch, no destructive edits.")
             if decision.action == "DEGRADE":
                 metrics.record_degradation()
                 state.recovery_guidance.append("RNOS degraded execution: inspect target and retry with minimal patch.")
@@ -136,7 +148,12 @@ def run_recovery_test(
                 _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, plan, decision, context)
                 break
 
-            executable = _constrain_plan(plan) if decision.action == "DEGRADE" else plan
+            executable = plan
+            if decision.action == "DEGRADE":
+                executable = _constrain_plan(plan)
+            elif decision.action == "RECOVER":
+                executable = _recover_plan(plan, state, report)
+                _emit_recovery_event(event_stream, scenario.name, "rnos_tuned", step, plan, decision, context)
             result = _execute_real(repo, test_runner, executable)
             validation = result.test_result if result.test_result is not None else test_runner.run()
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
@@ -193,9 +210,6 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
     drift = float(context.get("drift_score", 0.0))
     retry_count = int(context.get("retry_count", 0))
     failures = int(context.get("validation_failures", 0))
-    recoverable = bool(context.get("recoverable", True))
-    effective_failures = max(0, failures - 1) if recoverable and failures <= profile.retry_limit else failures
-    effective_retry_count = max(0, retry_count - 1) if recoverable and retry_count <= profile.retry_limit else retry_count
     destructive = bool(context.get("destructive_action", False)) or tool_risk >= profile.tool_risk_threshold
     if retry_count > profile.retry_limit or failures > profile.retry_limit + 1:
         context = {**context, "entropy": max(float(context.get("entropy", 0.0)), profile.entropy_threshold)}
@@ -204,12 +218,24 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
     return bridge.evaluate(
         RNOSContext(
             entropy=float(context.get("entropy", 0.0)),
-            retry_count=effective_retry_count,
+            retry_count=retry_count,
             drift_score=drift,
             tool_risk=tool_risk,
-            validation_failures=effective_failures,
+            validation_failures=failures,
             destructive_action=destructive,
             risk_escalation=bool(context.get("risk_escalation", False)),
+            retry_limit=profile.retry_limit,
+            malformed_output=bool(context.get("malformed_output", False)),
+            previous_failures=(
+                int(context["previous_failures"])
+                if context.get("previous_failures") is not None
+                else None
+            ),
+            previous_entropy=(
+                float(context["previous_entropy"])
+                if context.get("previous_entropy") is not None
+                else None
+            ),
         )
     )
 
@@ -238,6 +264,8 @@ def _emit_tuning_event(
             "decision": "ADJUST",
             "reason": tuning.reason,
             "adjustments": tuning.adjustments,
+            "failure_type": str(context.get("failure_type", "unknown")),
+            "improvement": None,
             "context": {
                 "entropy": float(context.get("entropy", 0.0)),
                 "drift": float(context.get("drift_score", 0.0)),
@@ -289,6 +317,10 @@ def _planner_failure_context(state: RealLoopState) -> dict[str, float | int | bo
         "destructive_action": False,
         "risk_escalation": True,
         "recoverable": True,
+        "malformed_output": True,
+        "previous_failures": state.previous_failures,
+        "previous_entropy": state.previous_entropy,
+        "retry_limit": state.retry_limit,
     }
 
 

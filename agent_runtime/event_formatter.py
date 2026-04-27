@@ -39,7 +39,11 @@ def format_timeline(events: list[dict[str, Any]]) -> str:
             f"files={int(event.get('files_modified', 0))} "
             f"lines={int(event.get('lines_changed', 0))}"
         )
-        if decision in {"DEGRADE", "REFUSE"} or reason != "healthy execution":
+        failure_type = str(event.get("failure_type", "") or "")
+        improvement = event.get("improvement")
+        if failure_type:
+            lines.append(f"         failure_type={failure_type} improvement={improvement}")
+        if decision in {"DEGRADE", "RECOVER", "REFUSE"} or reason != "healthy execution":
             lines.append(f"         reason: {reason}")
 
         previous_drift = drift
@@ -49,11 +53,17 @@ def format_timeline(events: list[dict[str, Any]]) -> str:
 
 
 def format_decision_summary(events: list[dict[str, Any]]) -> str:
-    counts = Counter(str(event.get("decision", "ALLOW")) for event in events)
+    decision_events = [
+        event
+        for event in events
+        if str(event.get("type", "")) not in {"recovery_event", "tuning_event", "outcome_event"}
+    ]
+    counts = Counter(str(event.get("decision", "ALLOW")) for event in decision_events)
     return (
         "RNOS Decision Summary\n"
         "---------------------\n"
         f"ALLOW: {counts.get('ALLOW', 0)}\n"
         f"DEGRADE: {counts.get('DEGRADE', 0)}\n"
+        f"RECOVER: {counts.get('RECOVER', 0)}\n"
         f"REFUSE: {counts.get('REFUSE', 0)}"
     )

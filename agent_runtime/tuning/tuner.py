@@ -12,7 +12,7 @@ from .profiles import TuningProfile
 @dataclass(frozen=True)
 class TuningDecision:
     profile: TuningProfile
-    adjustments: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    adjustments: dict[str, dict[str, float | int | bool]] = field(default_factory=dict)
     reason: str = "no tuning adjustment"
 
     @property
@@ -27,23 +27,31 @@ class RNOSTuner:
         self.profile = profile or TuningProfile()
         self.history: list[dict[str, Any]] = []
 
-    def adjust(self, context: dict[str, float | int | bool], metrics: RecoveryMetrics) -> TuningDecision:
-        entropy = float(context.get("entropy", 0.0))
+    def adjust(self, context: dict[str, float | int | bool | str], metrics: RecoveryMetrics) -> TuningDecision:
         drift = float(context.get("drift_score", 0.0))
-        risk = float(context.get("tool_risk", 0.0))
         failures = int(context.get("validation_failures", 0))
         retry_count = int(context.get("retry_count", 0))
-        recoverable = bool(context.get("recoverable", True))
+        failure_type = str(context.get("failure_type", "unknown"))
 
-        if risk >= self.profile.tool_risk_threshold:
+        if failure_type == "recoverable_validation":
             decision = self._apply(
-                self.profile.adjusted(tool_risk_delta=-0.5, entropy_delta=-0.4),
-                "Reduce exposure to destructive actions",
+                self.profile.adjusted(retry_delta=1, entropy_delta=0.5),
+                "Recoverable validation failure",
             )
-        elif recoverable and 0 < failures <= 2:
+        elif failure_type == "drift":
             decision = self._apply(
-                self.profile.adjusted(entropy_delta=0.8, retry_delta=1),
-                "Recoverable failure detected, allowing retry",
+                self.profile.adjusted(drift_delta=-0.5),
+                "Drift detected, tightening drift threshold",
+            )
+        elif failure_type == "malformed_output":
+            decision = self._apply(
+                self.profile.adjusted(retry_delta=1, enforce_strict_format=True),
+                "Malformed output, enforcing strict format retry",
+            )
+        elif failure_type == "fatal_risk":
+            decision = self._apply(
+                self.profile.adjusted(tool_risk_delta=-1.0),
+                "Fatal risk detected, reducing tool risk threshold",
             )
         elif retry_count >= self.profile.retry_limit or failures >= self.profile.retry_limit + 1:
             decision = self._apply(
@@ -52,8 +60,8 @@ class RNOSTuner:
             )
         elif drift >= self.profile.drift_threshold:
             decision = self._apply(
-                self.profile.adjusted(drift_delta=-0.4),
-                "Tighten drift threshold and redirect to target",
+                self.profile.adjusted(drift_delta=-0.5),
+                "Drift detected, tightening drift threshold",
             )
         else:
             decision = TuningDecision(profile=self.profile)
@@ -79,9 +87,15 @@ class RNOSTuner:
         return TuningDecision(profile=updated, adjustments=adjustments, reason=reason)
 
 
-def _diff_profiles(old: TuningProfile, new: TuningProfile) -> dict[str, dict[str, float | int]]:
-    changes: dict[str, dict[str, float | int]] = {}
-    for field_name in ("entropy_threshold", "drift_threshold", "retry_limit", "tool_risk_threshold"):
+def _diff_profiles(old: TuningProfile, new: TuningProfile) -> dict[str, dict[str, float | int | bool]]:
+    changes: dict[str, dict[str, float | int | bool]] = {}
+    for field_name in (
+        "entropy_threshold",
+        "drift_threshold",
+        "retry_limit",
+        "tool_risk_threshold",
+        "enforce_strict_format",
+    ):
         before = getattr(old, field_name)
         after = getattr(new, field_name)
         if before != after:

@@ -55,6 +55,9 @@ class AgentState:
     attempts: int = 0
     retry_count: int = 0
     validation_failures: int = 0
+    previous_failures: int | None = None
+    previous_entropy: float | None = None
+    retry_limit: int = 2
     degraded: bool = False
     stopped: bool = False
     plan_texts: list[str] = field(default_factory=list)
