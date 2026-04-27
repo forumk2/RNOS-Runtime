@@ -59,7 +59,7 @@ class RNOSBridge:
         trust = round(max(0.0, min(1.0, 1.0 - (entropy / 10.0))), 3)
         failure_type = classify_failure(
             {
-                "entropy": entropy,
+                "entropy": context.entropy,
                 "retry_count": context.retry_count,
                 "drift_score": context.drift_score,
                 "tool_risk": context.tool_risk,
@@ -89,7 +89,12 @@ class RNOSBridge:
         )
         recoverable = failure_type in {"recoverable_validation", "malformed_output", "unknown"}
         if has_failure_signal and recoverable:
-            if improvement is False and context.retry_count > 1 and context.previous_failures is not None:
+            if (
+                failure_type == "unknown"
+                and improvement is False
+                and context.retry_count > 1
+                and context.previous_failures is not None
+            ):
                 if context.validation_failures > context.previous_failures:
                     return GateDecision(
                         action="REFUSE",

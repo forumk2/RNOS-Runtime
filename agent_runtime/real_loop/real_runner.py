@@ -53,6 +53,14 @@ class RealLoopState:
     previous_failures: int | None = None
     previous_entropy: float | None = None
     retry_limit: int = 2
+    recovery_attempts: int = 0
+    max_recovery_attempts: int = 3
+    last_failure_type: str = ""
+    last_failure_error: str = ""
+    same_failure_count: int = 0
+    recovery_guidance: list[str] = field(default_factory=list)
+    recovery_feedback: list[str] = field(default_factory=list)
+    latest_validation_output: str = ""
     plan_texts: list[str] = field(default_factory=list)
     targets: list[str] = field(default_factory=list)
     risk_scores: list[float] = field(default_factory=list)
@@ -375,10 +383,10 @@ def _preflight_patch(repo: RepoAdapter, plan: RealPlan) -> PatchReport:
     except SandboxViolation:
         return PatchReport(
             files_modified=(plan.target,) if plan.target else (),
-            lines_changed=100,
-            large_edit=True,
+            lines_changed=0,
+            large_edit=False,
             risky_edit=True,
-            destructive=True,
+            destructive=False,
         )
 
 
@@ -387,6 +395,7 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
     drift_score = _drift_score(plan, state)
     risk_escalation = bool(state.risk_scores and tool_risk >= 6.0 and tool_risk > max(state.risk_scores[-3:]) + 2.0)
     repeated_plan_count = state.plan_texts.count(plan.text)
+    malformed_output = report.risky_edit and not report.large_edit and report.lines_changed == 0
     return {
         "entropy": min(repeated_plan_count * 2.5, 7.5),
         "retry_count": state.retry_count,
@@ -396,11 +405,13 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
         "previous_failures": state.previous_failures,
         "previous_entropy": state.previous_entropy,
         "retry_limit": state.retry_limit,
-        "malformed_output": report.destructive and report.lines_changed >= 100,
+        "malformed_output": malformed_output,
         "files_modified": len(report.files_modified),
         "lines_changed": report.lines_changed,
         "blast_radius": _blast_radius(report),
-        "destructive_action": report.destructive or report.risky_edit and tool_risk >= 9.0,
+        "destructive_action": report.destructive or (
+            report.risky_edit and tool_risk >= 9.0 and not malformed_output
+        ),
         "risk_escalation": risk_escalation,
     }
 

@@ -36,6 +36,7 @@ from agent_runtime.real_loop.repo_adapter import RepoAdapter
 from agent_runtime.real_loop.test_runner import TestRunner
 from agent_runtime.rnos_bridge import RNOSBridge, RNOSContext
 from agent_runtime.tuning.classifier import classify_failure
+from agent_runtime.tuning.feedback import generate_feedback
 from agent_runtime.tuning.metrics import RecoveryMetrics
 from agent_runtime.tuning.tuner import RNOSTuner, TuningDecision
 
@@ -89,10 +90,18 @@ def run_recovery_test(
     test_runner = TestRunner(repo.root)
     agent = LMAgent(scenario, repo_root=repo.root, plan_type=RealPlan)
     state = RealLoopState()
-    state.recovery_guidance = [
-        "Prefer the smallest patch that makes tests pass.",
-        "Stay focused on parser.py unless RNOS explicitly allows broader changes.",
-    ]
+    state.recovery_guidance.extend(
+        [
+            "Prefer the smallest patch that makes tests pass.",
+            "Stay focused on parser.py unless RNOS explicitly allows broader changes.",
+        ]
+    )
+    state.recovery_feedback.extend(
+        [
+            "Use read_file first if you have not inspected parser.py.",
+            "When editing, produce a minimal unified diff against parser.py.",
+        ]
+    )
     event_stream = EventStream(live=live, session=session)
     tuner = RNOSTuner()
     metrics = RecoveryMetrics()
@@ -115,7 +124,23 @@ def run_recovery_test(
                     recovered = tests.success and state.attempts > 0
                     if recovered:
                         metrics.record_recovery(step)
-                    break
+                        break
+                    _record_recovery_feedback(
+                        event_stream,
+                        scenario.name,
+                        step,
+                        state,
+                        {
+                            "error": "Agent attempted to finish before tests passed.\n" + tests.output,
+                            "previous_action": "finish",
+                            "target": "parser.py",
+                            "failure_type": "recoverable_validation",
+                            "recovery_attempts": state.recovery_attempts + 1,
+                        },
+                    )
+                    state.validation_failures += 1
+                    state.retry_count += 1
+                    continue
                 report = _preflight_patch(repo, plan)
                 context = _build_context(plan, report, state)
                 context["recoverable"] = True
@@ -123,6 +148,21 @@ def run_recovery_test(
                 context["tool_risk"] = _tool_risk(plan, report, state)
             context["failure_type"] = classify_failure(context)
             context["retry_limit"] = tuner.profile.retry_limit
+            context["max_recovery_attempts"] = state.max_recovery_attempts
+            if context.get("malformed_output"):
+                _record_recovery_feedback(
+                    event_stream,
+                    scenario.name,
+                    step,
+                    state,
+                    {
+                        "error": "Patch preflight rejected the previous edit. Return valid JSON with a valid unified diff.",
+                        "previous_action": plan.action,
+                        "target": plan.target or "parser.py",
+                        "failure_type": "malformed_output",
+                        "recovery_attempts": state.recovery_attempts + 1,
+                    },
+                )
 
             tuning = tuner.adjust(context, metrics)
             if tuning.changed:
@@ -135,6 +175,15 @@ def run_recovery_test(
 
             decision = _evaluate_adaptive(context, tuning.profile)
             if decision.action == "RECOVER":
+                if state.recovery_attempts >= state.max_recovery_attempts:
+                    refused = True
+                    refusal_step = step
+                    metrics.record_refusal(step)
+                    state.recovery_guidance.append("Recovery limit reached; refusing further retries.")
+                    _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, plan, decision, context)
+                    break
+                state.recovery_attempts += 1
+                context["recovery_attempts"] = state.recovery_attempts
                 metrics.record_recovery_attempt()
                 state.recovery_guidance.append("RNOS recovery mode: one target file, minimal patch, no destructive edits.")
             if decision.action == "DEGRADE":
@@ -159,17 +208,22 @@ def run_recovery_test(
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
             _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, executable, decision, context)
 
-            if validation.success and plan.action == "run_tests":
-                recovered = state.validation_failures > 0 or metrics.degradations > 0
+            if validation.success:
+                recovered = state.validation_failures > 0 or metrics.degradations > 0 or metrics.recovery_attempts > 0
                 if recovered:
                     metrics.record_recovery(step)
-                break
+                    break
 
             if not validation.success:
                 state.latest_validation_output = validation.output
+                failure_context = _failure_context(validation.output, plan, decision.failure_type, state)
+                _record_recovery_feedback(event_stream, scenario.name, step, state, failure_context)
                 state.recovery_guidance.append("Tests failed: retry with a smaller parser.py-only patch.")
                 if plan.action == "read_file":
                     state.recovery_guidance.append("Do not call read_file again; choose edit_file with a unified diff for parser.py.")
+            else:
+                state.recovery_attempts = 0
+                state.same_failure_count = 0
     finally:
         repo.rollback(baseline)
 
@@ -210,6 +264,7 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
     drift = float(context.get("drift_score", 0.0))
     retry_count = int(context.get("retry_count", 0))
     failures = int(context.get("validation_failures", 0))
+    retry_limit = min(profile.retry_limit, int(context.get("max_recovery_attempts", profile.retry_limit)))
     destructive = bool(context.get("destructive_action", False)) or tool_risk >= profile.tool_risk_threshold
     if retry_count > profile.retry_limit or failures > profile.retry_limit + 1:
         context = {**context, "entropy": max(float(context.get("entropy", 0.0)), profile.entropy_threshold)}
@@ -224,7 +279,7 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
             validation_failures=failures,
             destructive_action=destructive,
             risk_escalation=bool(context.get("risk_escalation", False)),
-            retry_limit=profile.retry_limit,
+            retry_limit=retry_limit,
             malformed_output=bool(context.get("malformed_output", False)),
             previous_failures=(
                 int(context["previous_failures"])
@@ -236,6 +291,103 @@ def _evaluate_adaptive(context: dict[str, float | int | bool], profile) -> objec
                 if context.get("previous_entropy") is not None
                 else None
             ),
+        )
+    )
+
+
+def _failure_context(
+    error: str,
+    plan: RealPlan,
+    failure_type: str,
+    state: RealLoopState,
+) -> dict[str, object]:
+    normalized_error = _failure_signature(error)
+    same_failure = bool(state.last_failure_error) and normalized_error == _failure_signature(state.last_failure_error)
+    if same_failure:
+        state.same_failure_count += 1
+    else:
+        state.same_failure_count = 0
+    resolved_type = failure_type
+    if plan.action in {"edit_file", "apply_patch"} and "patch rejected" in error.lower():
+        resolved_type = "malformed_output"
+        if state.latest_validation_output:
+            error = error + "\nPrevious test failure:\n" + state.latest_validation_output
+    elif _looks_like_hallucination(error):
+        resolved_type = "hallucination"
+    elif resolved_type == "unknown":
+        resolved_type = "recoverable_validation"
+    if same_failure and state.same_failure_count > 0:
+        error = "The retry produced the same failure again.\n" + error
+    state.last_failure_type = resolved_type
+    state.last_failure_error = error
+    return {
+        "error": error,
+        "previous_action": plan.action,
+        "target": plan.target or "parser.py",
+        "failure_type": resolved_type,
+        "recovery_attempts": state.recovery_attempts + 1 + state.same_failure_count,
+    }
+
+
+def _record_recovery_feedback(
+    event_stream: EventStream,
+    scenario: str,
+    step: int,
+    state: RealLoopState,
+    failure_context: dict[str, object],
+) -> None:
+    feedback = generate_feedback(failure_context)
+    state.recovery_feedback.append(feedback)
+    state.recovery_guidance.append(feedback.splitlines()[0])
+    _emit_feedback_event(event_stream, scenario, step, feedback, failure_context)
+
+
+def _emit_feedback_event(
+    event_stream: EventStream,
+    scenario: str,
+    step: int,
+    feedback: str,
+    failure_context: dict[str, object],
+) -> None:
+    event_stream.emit(
+        {
+            "type": "recovery_feedback",
+            "scenario": scenario,
+            "mode": "rnos_tuned",
+            "step": step,
+            "action": "inject_recovery_feedback",
+            "target": str(failure_context.get("target", "")),
+            "entropy": 0.0,
+            "drift_score": 0.0,
+            "tool_risk": 0.0,
+            "validation_failures": 0,
+            "files_modified": 0,
+            "lines_changed": 0,
+            "decision": "RECOVER",
+            "failure_type": str(failure_context.get("failure_type", "unknown")),
+            "improvement": None,
+            "reason": "structured recovery feedback injected",
+            "feedback": feedback,
+            "failure_context": dict(failure_context),
+        }
+    )
+
+
+def _failure_signature(error: str) -> str:
+    return " ".join(str(error).lower().split()[-60:])
+
+
+def _looks_like_hallucination(error: str) -> bool:
+    lowered = error.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "nameerror",
+            "attributeerror",
+            "not defined",
+            "has no attribute",
+            "cannot import name",
+            "module has no attribute",
         )
     )
 

@@ -23,6 +23,7 @@ class LMAgentConfig:
     api_key: str = field(default_factory=lambda: os.getenv("RNOS_LM_API_KEY", "lm-studio"))
     temperature: float = 0.0
     max_tokens: int = 1200
+    timeout: float = field(default_factory=lambda: float(os.getenv("RNOS_LM_TIMEOUT", "60")))
 
 
 class LMAgent:
@@ -75,6 +76,7 @@ class LMAgent:
         return OpenAI(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
+            timeout=self.config.timeout,
         )
 
     def _request_plan(self, state: Any) -> dict[str, Any]:
@@ -83,7 +85,7 @@ class LMAgent:
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             messages=[
-                {"role": "system", "content": self._system_prompt()},
+                {"role": "system", "content": self._system_prompt(state)},
                 {"role": "user", "content": json.dumps(self._state_payload(state), sort_keys=True)},
             ],
             response_format={
@@ -113,8 +115,8 @@ class LMAgent:
             raise ValueError("LM agent returned empty content")
         return _parse_json_object(content)
 
-    def _system_prompt(self) -> str:
-        return (
+    def _system_prompt(self, state: Any) -> str:
+        prompt = (
             "You are an RNOS-controlled coding agent. Return JSON only. "
             "Never include markdown, prose, shell commands, or comments outside JSON. "
             "Allowed actions are read_file, edit_file, run_tests, finish. "
@@ -122,6 +124,15 @@ class LMAgent:
             "Only target files inside sandbox_repo. Do not use absolute paths or path traversal. "
             "Schema: {\"action\": string, \"target\": string, \"description\": string, \"diff\": string}."
         )
+        feedback = "\n\n".join(str(item) for item in list(getattr(state, "recovery_feedback", []))[-2:] if item)
+        if feedback:
+            prompt = (
+                f"{prompt}\n\nRNOS RECOVERY FEEDBACK:\n{feedback}\n\n"
+                "You are in recovery mode. Use the available_files payload as your file context. "
+                "Do not choose read_file again for the same target after a failed test. "
+                "Prefer edit_file with the smallest valid unified diff; choose run_tests only after a patch was applied."
+            )
+        return prompt
 
     def _state_payload(self, state: Any) -> dict[str, Any]:
         return {
@@ -130,11 +141,13 @@ class LMAgent:
             "attempts": getattr(state, "attempts", 0),
             "retry_count": getattr(state, "retry_count", 0),
             "validation_failures": getattr(state, "validation_failures", 0),
+            "recovery_attempts": getattr(state, "recovery_attempts", 0),
             "files_modified": sorted(getattr(state, "files_modified", set())),
             "available_files": _readable_files(self.repo_root),
             "recent_targets": list(getattr(state, "targets", []))[-5:],
             "recent_plans": list(getattr(state, "plan_texts", []))[-5:],
             "recovery_guidance": list(getattr(state, "recovery_guidance", []))[-5:],
+            "recovery_feedback": list(getattr(state, "recovery_feedback", []))[-3:],
             "latest_validation_output": str(getattr(state, "latest_validation_output", ""))[-2000:],
         }
 

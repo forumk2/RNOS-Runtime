@@ -133,7 +133,8 @@ def _apply_file_patch(repo_root: Path, file_patch: FilePatch) -> None:
     source_index = 0
 
     for hunk in file_patch.hunks:
-        hunk_start = max(hunk.old_start - 1, 0)
+        preferred_start = max(hunk.old_start - 1, 0)
+        hunk_start = _resolve_hunk_start(original, hunk, preferred_start, source_index, target)
         patched.extend(original[source_index:hunk_start])
         source_index = hunk_start
 
@@ -153,6 +154,36 @@ def _apply_file_patch(repo_root: Path, file_patch: FilePatch) -> None:
     patched.extend(original[source_index:])
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("".join(patched), encoding="utf-8")
+
+
+def _resolve_hunk_start(
+    original: list[str],
+    hunk: Hunk,
+    preferred_start: int,
+    minimum_start: int,
+    target: Path,
+) -> int:
+    if _hunk_matches(original, preferred_start, hunk):
+        return preferred_start
+
+    for candidate in range(minimum_start, len(original) + 1):
+        if candidate == preferred_start:
+            continue
+        if _hunk_matches(original, candidate, hunk):
+            return candidate
+
+    raise PatchError(f"patch context mismatch for {target.name}")
+
+
+def _hunk_matches(original: list[str], start: int, hunk: Hunk) -> bool:
+    index = start
+    for line in hunk.lines:
+        if line.startswith("+"):
+            continue
+        if index >= len(original) or original[index] != line[1:]:
+            return False
+        index += 1
+    return True
 
 
 def _report_for(repo_root: Path, patches: list[FilePatch]) -> PatchReport:
