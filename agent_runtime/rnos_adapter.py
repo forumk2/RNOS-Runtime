@@ -119,6 +119,28 @@ def latest_change_type(history: list[ExecutionResult]) -> str:
     return "unknown"
 
 
+def latest_change_vector(history: list[ExecutionResult]) -> dict[str, int]:
+    for result in reversed(_recent(history)):
+        if result.ast_change_vector is not None:
+            return result.ast_change_vector
+    return {}
+
+
+def latest_change_summary(history: list[ExecutionResult]) -> str:
+    for result in reversed(_recent(history)):
+        if result.ast_change_summary:
+            return result.ast_change_summary
+    return "unknown"
+
+
+def _log_change_vector(change_vector: dict[str, int]) -> None:
+    keys = ("if", "for", "while", "try", "function_def", "call", "assign", "return")
+    logger.info(
+        "[RNOS CHANGE VECTOR]\n%s",
+        "\n".join(f"{key}={change_vector.get(key, 0):+d}" for key in keys),
+    )
+
+
 def compute_trend(history: list[ExecutionResult]) -> float:
     window = _recent(history)
     if len(window) < 2:
@@ -155,6 +177,8 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     similarity_score = compute_similarity(history)
     progress_score = compute_progress_score(history)
     change_type = latest_change_type(history)
+    change_vector = latest_change_vector(history)
+    change_summary = latest_change_summary(history)
     trend_score = compute_trend(history)
     instability_score = compute_instability(history)
     recent_failures = len(_failures(history))
@@ -181,11 +205,14 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         trend_score,
         instability_score,
     )
+    _log_change_vector(change_vector)
+    logger.info("[RNOS CHANGE SUMMARY]\n%s", change_summary)
 
     if (
         latest_failure
         and similarity_score > 0.85
         and progress_score < 0.1
+        and change_summary in {"no structural change", "unknown"}
         and recent_failures >= 2
     ):
         action = "refuse"
@@ -194,10 +221,18 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         latest_failure
         and similarity_score > 0.75
         and progress_score < 0.2
+        and change_summary == "minor logic change"
         and recent_failures >= 2
     ):
         action = "refuse"
-        reason = "loop with minor variation"
+        reason = "cosmetic retry loop"
+    elif latest_failure and change_summary in {
+        "control flow change",
+        "function structure change",
+        "major structural change",
+    }:
+        action = "retry"
+        reason = "meaningful structural attempt"
     elif instability_score > 0.75:
         action = "refuse"
         reason = "system unstable (high entropy)"

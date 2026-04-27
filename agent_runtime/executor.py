@@ -1,5 +1,6 @@
 import logging
 
+from .ast_change_vector import extract_features
 from .ast_diff import flatten_ast
 from .ast_similarity import ast_fingerprint
 from .types import ExecutionResult
@@ -56,6 +57,7 @@ def execute_step(step: str) -> ExecutionResult:
             artifact_path=str(target),
             ast_fingerprint=ast_fingerprint(source),
             ast_tokens=flatten_ast(source),
+            ast_features=extract_features(source),
         )
     except OSError as exc:
         logger.exception("executor.failed")

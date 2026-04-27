@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+from .ast_change_vector import extract_features
 from .ast_diff import flatten_ast
 from .ast_similarity import ast_fingerprint
 from .types import ExecutionResult
@@ -28,10 +29,12 @@ def validate() -> ExecutionResult:
     latest = files[-1]
     fingerprint = None
     tokens = None
+    features = None
     try:
         source = latest.read_text(encoding="utf-8")
         fingerprint = ast_fingerprint(source)
         tokens = flatten_ast(source)
+        features = extract_features(source)
         compile(source, str(latest), "exec")
     except (OSError, SyntaxError) as exc:
         logger.warning("validator.syntax_failed", extra={"path": str(latest)})
@@ -42,6 +45,7 @@ def validate() -> ExecutionResult:
             artifact_path=str(latest),
             ast_fingerprint=fingerprint,
             ast_tokens=tokens,
+            ast_features=features,
             failure_type=type(exc).__name__,
         )
 
@@ -52,4 +56,5 @@ def validate() -> ExecutionResult:
         artifact_path=str(latest),
         ast_fingerprint=fingerprint,
         ast_tokens=tokens,
+        ast_features=features,
     )
