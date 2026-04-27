@@ -75,7 +75,7 @@ def assess_tool_risk(plan: AgentPlan, previous_scores: list[float]) -> RiskAsses
     blast_radius = estimate_blast_radius(plan)
     destructive = is_destructive_command(plan.command) or plan.tool == "delete"
     previous_peak = max(previous_scores[-3:], default=0.0)
-    escalation = bool(previous_scores and base > previous_peak + 1.0)
+    escalation = bool(previous_scores and base >= 6.0 and base > previous_peak + 2.0)
 
     score = base + (blast_radius * 0.18)
     reasons: list[str] = [f"base={base:.1f}", f"blast_radius={blast_radius:.1f}"]

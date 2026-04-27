@@ -17,6 +17,11 @@ Agent failures are rarely a single bad step. They often appear as retry storms, 
 - `failure_loop.py`: an agent repeatedly runs failing tests and applies non-progressing edits. RNOS refuses after the loop becomes evident.
 - `destructive_command.py`: an agent attempts `rm -rf src/` and `git reset --hard`. RNOS blocks before execution.
 - `drift_scenario.py`: an agent starts on target, then edits unrelated files and introduces incoherent changes. RNOS degrades, then refuses as drift rises.
+- `benign_success_control.py`: an agent reads, applies a valid typo fix, and passes tests. RNOS allows every step, demonstrating non-interference on healthy workflows.
+
+### benign_success_control
+
+This control case proves RNOS does not create needless friction when an agent behaves correctly. Naive and RNOS modes complete the same three steps with zero wasted attempts, no drift detection, no destructive prevention, and `RNOS Gate Events: NONE`.
 
 ## Run
 
@@ -41,7 +46,7 @@ RNOS   2         2       Step 3        8.94
 Tool Risk Escalations: 0
 Destructive Actions Prevented: 0
 Drift Detection Step: -
-RNOS Gate Events: Step 3 REFUSE
+RNOS Gate Events: Step 2 DEGRADE, Step 3 REFUSE
 ```
 
-The exact values are deterministic and may change as scoring weights evolve, but each scenario is expected to produce a clear naive vs RNOS contrast and at least one RNOS `REFUSE` event.
+The exact values are deterministic and may change as scoring weights evolve. Failure scenarios are expected to produce a clear naive vs RNOS contrast and at least one RNOS `REFUSE` event; `benign_success_control` is expected to show zero RNOS interference.

@@ -295,6 +295,24 @@ def run_agent_gate_benchmark(scenarios: list[ScenarioSpec]) -> list[ScenarioComp
     return [compare_agent_gate_scenario(scenario) for scenario in scenarios]
 
 
+def default_agent_gate_scenarios() -> list[ScenarioSpec]:
+    """Return the standard demo suite in benchmark display order."""
+
+    from demos.agent_gate.scenarios import (
+        benign_success_control,
+        destructive_command,
+        drift_scenario,
+        failure_loop,
+    )
+
+    return [
+        failure_loop.create_scenario(),
+        destructive_command.create_scenario(),
+        drift_scenario.create_scenario(),
+        benign_success_control.create_scenario(),
+    ]
+
+
 def format_agent_gate_results(comparisons: list[ScenarioComparison]) -> str:
     blocks: list[str] = []
     for comparison in comparisons:
@@ -382,4 +400,4 @@ def _format_gate_events(result: ModeRunResult) -> str:
         for trace in result.trace
         if trace.decision in {"DEGRADE", "REFUSE"}
     ]
-    return ", ".join(events) if events else "-"
+    return ", ".join(events) if events else "NONE"

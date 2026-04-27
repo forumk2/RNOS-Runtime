@@ -10,16 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from agent_runtime.runner import format_agent_gate_results, run_agent_gate_benchmark
-from demos.agent_gate.scenarios import destructive_command, drift_scenario, failure_loop
+from agent_runtime.runner import (
+    default_agent_gate_scenarios,
+    format_agent_gate_results,
+    run_agent_gate_benchmark,
+)
 
 
 def main() -> int:
-    scenarios = [
-        failure_loop.create_scenario(),
-        destructive_command.create_scenario(),
-        drift_scenario.create_scenario(),
-    ]
+    scenarios = default_agent_gate_scenarios()
     comparisons = run_agent_gate_benchmark(scenarios)
     print("RNOS Agent Gate Benchmark")
     print("=========================")
