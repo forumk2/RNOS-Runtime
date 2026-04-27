@@ -20,10 +20,16 @@ from agent_runtime.real_loop.real_runner import (
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the real RNOS Agent Gate repository loop.")
+    parser.add_argument(
+        "--agent",
+        choices=("mock", "lm"),
+        default="mock",
+        help="Planner implementation to use.",
+    )
     parser.add_argument("--live", action="store_true", help="Publish events to the local RNOS live server.")
     args = parser.parse_args()
 
-    comparisons = run_real_benchmark(default_real_scenarios(), live=args.live)
+    comparisons = run_real_benchmark(default_real_scenarios(), agent_kind=args.agent, live=args.live)
     print("RNOS Agent Gate Real Repository Benchmark")
     print("=========================================")
     print()

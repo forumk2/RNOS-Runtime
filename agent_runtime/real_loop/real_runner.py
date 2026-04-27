@@ -7,18 +7,20 @@ import difflib
 import re
 from typing import Literal
 
+from agent_runtime.agents.lm_agent import LMAgent
 from agent_runtime.event_formatter import format_timeline
 from agent_runtime.event_logger import save_json
 from agent_runtime.event_stream import EventStream
 from agent_runtime.live.session import LiveSession
 from agent_runtime.rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 
+from .file_tools import SandboxViolation
 from .patcher import PatchReport
 from .repo_adapter import RepoAdapter
 from .test_runner import TestResult, TestRunner
 
 
-RealAction = Literal["read_file", "apply_patch", "run_tests", "finish"]
+RealAction = Literal["read_file", "edit_file", "apply_patch", "run_tests", "finish"]
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ def run_real_scenario(
     scenario: RealScenario,
     *,
     mode: str,
+    agent_kind: str = "mock",
     live: bool = False,
     session: LiveSession | None = None,
 ) -> RealModeResult:
@@ -143,7 +146,7 @@ def run_real_scenario(
 
     repo = RepoAdapter()
     baseline = repo.reset(scenario.files)
-    agent = DeterministicRealAgent(scenario)
+    agent = _build_agent(agent_kind, scenario, repo)
     test_runner = TestRunner(repo.root)
     rnos = RealRNOSGate()
     state = RealLoopState()
@@ -240,13 +243,30 @@ def run_real_scenario(
     )
 
 
-def run_real_benchmark(scenarios: list[RealScenario], *, live: bool = False) -> list[RealScenarioComparison]:
+def run_real_benchmark(
+    scenarios: list[RealScenario],
+    *,
+    agent_kind: str = "mock",
+    live: bool = False,
+) -> list[RealScenarioComparison]:
     session = LiveSession() if live else None
     return [
         RealScenarioComparison(
             scenario=scenario,
-            naive=run_real_scenario(scenario, mode="naive", live=live, session=session),
-            rnos=run_real_scenario(scenario, mode="rnos", live=live, session=session),
+            naive=run_real_scenario(
+                scenario,
+                mode="naive",
+                agent_kind=agent_kind,
+                live=live,
+                session=session,
+            ),
+            rnos=run_real_scenario(
+                scenario,
+                mode="rnos",
+                agent_kind=agent_kind,
+                live=live,
+                session=session,
+            ),
         )
         for scenario in scenarios
     ]
@@ -260,13 +280,28 @@ def default_real_scenarios() -> list[RealScenario]:
     return [_safe_fix(), _failure_loop(), _dangerous_edit()]
 
 
+def _build_agent(agent_kind: str, scenario: RealScenario, repo: RepoAdapter):
+    if agent_kind == "mock":
+        return DeterministicRealAgent(scenario)
+    if agent_kind == "lm":
+        return LMAgent(scenario, repo_root=repo.root, plan_type=RealPlan)
+    raise ValueError(f"unsupported agent: {agent_kind}")
+
+
 def _execute_real(repo: RepoAdapter, test_runner: TestRunner, plan: RealPlan) -> ExecutionResult:
     if plan.action == "read_file":
         content = repo.tools.read_file(plan.target)
         return ExecutionResult(success=True, output=f"read {plan.target}: {len(content)} bytes")
 
-    if plan.action == "apply_patch":
-        report = repo.tools.apply_patch(plan.diff)
+    if plan.action in {"apply_patch", "edit_file"}:
+        try:
+            report = repo.tools.apply_patch(plan.diff)
+        except SandboxViolation as exc:
+            return ExecutionResult(
+                success=False,
+                output=f"patch rejected: {exc}",
+                test_result=TestResult(success=False, output=f"patch rejected: {exc}", failures=1),
+            )
         return ExecutionResult(
             success=True,
             output=f"applied patch to {len(report.files_modified)} file(s)",
@@ -281,9 +316,18 @@ def _execute_real(repo: RepoAdapter, test_runner: TestRunner, plan: RealPlan) ->
 
 
 def _preflight_patch(repo: RepoAdapter, plan: RealPlan) -> PatchReport:
-    if plan.action != "apply_patch":
+    if plan.action not in {"apply_patch", "edit_file"}:
         return PatchReport()
-    return repo.tools.apply_patch(plan.diff, dry_run=True)
+    try:
+        return repo.tools.apply_patch(plan.diff, dry_run=True)
+    except SandboxViolation:
+        return PatchReport(
+            files_modified=(plan.target,) if plan.target else (),
+            lines_changed=100,
+            large_edit=True,
+            risky_edit=True,
+            destructive=True,
+        )
 
 
 def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) -> dict[str, float | int | bool]:
@@ -309,7 +353,7 @@ def _tool_risk(plan: RealPlan, report: PatchReport, state: RealLoopState) -> flo
         return 1.0
     if plan.action == "run_tests":
         return 2.0
-    if plan.action == "apply_patch":
+    if plan.action in {"apply_patch", "edit_file"}:
         score = 3.0 + min(report.lines_changed * 0.05, 2.5)
         if report.multi_file_edit:
             score += 2.0
@@ -349,7 +393,7 @@ def _blast_radius(report: PatchReport) -> float:
 
 
 def _constrain_plan(plan: RealPlan) -> RealPlan:
-    if plan.action != "apply_patch":
+    if plan.action not in {"apply_patch", "edit_file"}:
         return plan
     return RealPlan(
         action="read_file",

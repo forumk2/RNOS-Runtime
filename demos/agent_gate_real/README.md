@@ -26,6 +26,17 @@ python demos/agent_gate_real/run_real_demo.py
 
 Each scenario prints an RNOS Event Timeline and writes a structured JSON decision trace to `./rnos_logs/` for replay or analysis.
 
+## LM Studio Agent
+
+The real loop can replace the deterministic planner with an LM Studio-backed agent:
+
+```bash
+python demos/agent_gate_real/run_real_demo.py --agent lm --live
+python demos/agent_gate_real/run_lm_demo.py
+```
+
+The LM agent uses the OpenAI-compatible endpoint at `http://127.0.0.1:1234/v1`, requests JSON-only plans, and supports only `read_file`, `edit_file`, `run_tests`, and `finish`. Edits are still routed through the sandbox patcher, and RNOS still evaluates every step before execution.
+
 ## Why It Matters
 
 This is the control layer between an autonomous coding agent and a working tree. The naive mode shows what the agent would do directly; RNOS mode shows the same loop with a safety kernel that can stop runaway retries and dangerous edits before they touch the repository.
