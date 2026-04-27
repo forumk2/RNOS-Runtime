@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 DecisionAction = Literal["continue", "retry", "refuse"]
@@ -31,6 +31,7 @@ class ExecutionResult:
     ast_change_summary: Optional[str] = None
     intent_score: Optional[float] = None
     intent_class: Optional[str] = None
+    cevak: Optional[Dict[str, Any]] = None
     failure_type: Optional[str] = None
 
 

@@ -147,11 +147,46 @@ def latest_intent_class(history: list[ExecutionResult]) -> str:
     return "unknown"
 
 
+def latest_cevak(history: list[ExecutionResult]) -> dict[str, object]:
+    for result in reversed(_recent(history)):
+        if result.cevak:
+            return result.cevak
+    return {
+        "consistency": 1.0,
+        "evidence": 0.0,
+        "variance": 1.0,
+        "agreement": 0.0,
+        "confidence": 0.0,
+        "drift_score": 0.0,
+        "drift_type": "stable",
+    }
+
+
 def _log_change_vector(change_vector: dict[str, int]) -> None:
     keys = ("if", "for", "while", "try", "function_def", "call", "assign", "return")
     logger.info(
         "[RNOS CHANGE VECTOR]\n%s",
         "\n".join(f"{key}={change_vector.get(key, 0):+d}" for key in keys),
+    )
+
+
+def _log_cevak(cevak: dict[str, object]) -> None:
+    logger.info(
+        "[RNOS CEVAK]\n"
+        "consistency=%.2f\n"
+        "evidence=%.2f\n"
+        "variance=%.2f\n"
+        "agreement=%.2f\n"
+        "confidence=%.2f\n"
+        "drift_score=%.2f\n"
+        "drift_type=%s",
+        float(cevak.get("consistency", 1.0)),
+        float(cevak.get("evidence", 0.0)),
+        float(cevak.get("variance", 1.0)),
+        float(cevak.get("agreement", 0.0)),
+        float(cevak.get("confidence", 0.0)),
+        float(cevak.get("drift_score", 0.0)),
+        cevak.get("drift_type", "stable"),
     )
 
 
@@ -195,6 +230,8 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     change_summary = latest_change_summary(history)
     intent_score = latest_intent_score(history)
     intent_class = latest_intent_class(history)
+    cevak = latest_cevak(history)
+    drift_type = str(cevak.get("drift_type", "stable"))
     trend_score = compute_trend(history)
     instability_score = compute_instability(history)
     recent_failures = len(_failures(history))
@@ -226,8 +263,22 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     _log_change_vector(change_vector)
     logger.info("[RNOS CHANGE SUMMARY]\n%s", change_summary)
     logger.info("[RNOS INTENT]\nscore=%.2f\nclass=%s", intent_score, intent_class)
+    _log_cevak(cevak)
 
-    if latest_failure and intent_class == "no_intent":
+    if (
+        latest_failure
+        and drift_type == "overreach"
+        and intent_class in {"no_intent", "cosmetic_intent"}
+    ):
+        action = "refuse"
+        reason = "overconfident stagnation"
+    elif latest_failure and drift_type == "echo_chamber" and similarity_score > 0.8:
+        action = "refuse"
+        reason = "self-reinforcing failure loop"
+    elif latest_failure and drift_type == "incoherent":
+        action = "retry"
+        reason = "unstable attempts, allow exploration"
+    elif latest_failure and intent_class == "no_intent":
         action = "refuse"
         reason = "no meaningful attempt"
     elif latest_failure and intent_class == "cosmetic_intent" and similarity_score > 0.8:

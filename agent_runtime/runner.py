@@ -6,6 +6,7 @@ from . import executor, planner, rnos_adapter, validator
 from .ast_change_vector import compute_change_vector, summarize_change
 from .ast_diff import classify_change, compute_progress
 from .ast_similarity import ast_similarity_score
+from .cevak import compute_cevak
 from .intent_signal import classify_intent, compute_intent_score
 from .types import ExecutionResult, RNOSDecision, Task
 from .utils import cleanup_workspace
@@ -63,6 +64,7 @@ def _with_artifact_metadata(
         ast_change_summary=execution.ast_change_summary,
         intent_score=execution.intent_score,
         intent_class=execution.intent_class,
+        cevak=execution.cevak,
     )
 
 
@@ -124,6 +126,7 @@ def run_task(task: Task) -> list[ExecutionResult]:
 
         validation = validator.validate()
         validation = _with_artifact_metadata(validation, execution)
+        validation = replace(validation, cevak=compute_cevak(validation, history))
         history.append(validation)
 
         if current_source is not None:
