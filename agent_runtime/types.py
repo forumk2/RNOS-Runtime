@@ -29,6 +29,8 @@ class ExecutionResult:
     ast_features: Optional[Dict[str, int]] = None
     ast_change_vector: Optional[Dict[str, int]] = None
     ast_change_summary: Optional[str] = None
+    intent_score: Optional[float] = None
+    intent_class: Optional[str] = None
     failure_type: Optional[str] = None
 
 

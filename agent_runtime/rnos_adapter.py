@@ -133,6 +133,20 @@ def latest_change_summary(history: list[ExecutionResult]) -> str:
     return "unknown"
 
 
+def latest_intent_score(history: list[ExecutionResult]) -> float:
+    for result in reversed(_recent(history)):
+        if result.intent_score is not None:
+            return result.intent_score
+    return 0.0
+
+
+def latest_intent_class(history: list[ExecutionResult]) -> str:
+    for result in reversed(_recent(history)):
+        if result.intent_class:
+            return result.intent_class
+    return "unknown"
+
+
 def _log_change_vector(change_vector: dict[str, int]) -> None:
     keys = ("if", "for", "while", "try", "function_def", "call", "assign", "return")
     logger.info(
@@ -179,6 +193,8 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     change_type = latest_change_type(history)
     change_vector = latest_change_vector(history)
     change_summary = latest_change_summary(history)
+    intent_score = latest_intent_score(history)
+    intent_class = latest_intent_class(history)
     trend_score = compute_trend(history)
     instability_score = compute_instability(history)
     recent_failures = len(_failures(history))
@@ -191,6 +207,7 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         "error_similarity=%.2f\n"
         "ast_similarity=%.2f\n"
         "ast_progress=%.2f\n"
+        "progress=%.2f\n"
         "change_type=%s\n"
         "similarity=%.2f\n"
         "trend=%.2f\n"
@@ -200,6 +217,7 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
         error_similarity,
         ast_similarity,
         progress_score,
+        progress_score,
         change_type,
         similarity_score,
         trend_score,
@@ -207,8 +225,21 @@ def evaluate_state(history: list[ExecutionResult]) -> RNOSDecision:
     )
     _log_change_vector(change_vector)
     logger.info("[RNOS CHANGE SUMMARY]\n%s", change_summary)
+    logger.info("[RNOS INTENT]\nscore=%.2f\nclass=%s", intent_score, intent_class)
 
-    if (
+    if latest_failure and intent_class == "no_intent":
+        action = "refuse"
+        reason = "no meaningful attempt"
+    elif latest_failure and intent_class == "cosmetic_intent" and similarity_score > 0.8:
+        action = "refuse"
+        reason = "cosmetic retry loop"
+    elif latest_failure and intent_class == "exploratory_intent":
+        action = "retry"
+        reason = "valid structural exploration"
+    elif latest_failure and intent_class == "strong_intent":
+        action = "retry"
+        reason = "high-value attempt"
+    elif (
         latest_failure
         and similarity_score > 0.85
         and progress_score < 0.1

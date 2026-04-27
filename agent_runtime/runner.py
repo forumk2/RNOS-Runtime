@@ -6,6 +6,7 @@ from . import executor, planner, rnos_adapter, validator
 from .ast_change_vector import compute_change_vector, summarize_change
 from .ast_diff import classify_change, compute_progress
 from .ast_similarity import ast_similarity_score
+from .intent_signal import classify_intent, compute_intent_score
 from .types import ExecutionResult, RNOSDecision, Task
 from .utils import cleanup_workspace
 
@@ -60,6 +61,8 @@ def _with_artifact_metadata(
         ast_features=validation.ast_features or execution.ast_features,
         ast_change_vector=execution.ast_change_vector,
         ast_change_summary=execution.ast_change_summary,
+        intent_score=execution.intent_score,
+        intent_class=execution.intent_class,
     )
 
 
@@ -83,6 +86,9 @@ def run_task(task: Task) -> list[ExecutionResult]:
             change_type = None
             change_vector = None
             change_summary = None
+            similarity_score = ast_similarity_score(previous_source, current_source)
+            intent_score = None
+            intent_class = None
             if previous_tokens is not None and execution.ast_tokens is not None:
                 progress_score = compute_progress(previous_tokens, execution.ast_tokens)
                 change_type = classify_change(progress_score)
@@ -92,17 +98,28 @@ def run_task(task: Task) -> list[ExecutionResult]:
                     execution.ast_features,
                 )
                 change_summary = summarize_change(change_vector)
+            if progress_score is not None and change_vector is not None:
+                intent_score = compute_intent_score(
+                    similarity_score,
+                    progress_score,
+                    change_vector,
+                )
+                intent_class = classify_intent(
+                    intent_score,
+                    progress_score,
+                    similarity_score,
+                    change_vector,
+                )
 
             execution = replace(
                 execution,
-                ast_similarity_to_previous=ast_similarity_score(
-                    previous_source,
-                    current_source,
-                ),
+                ast_similarity_to_previous=similarity_score,
                 ast_progress_score=progress_score,
                 ast_change_type=change_type,
                 ast_change_vector=change_vector,
                 ast_change_summary=change_summary,
+                intent_score=intent_score,
+                intent_class=intent_class,
             )
 
         validation = validator.validate()
