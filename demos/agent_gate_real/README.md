@@ -24,6 +24,8 @@ RNOS evaluates every step before execution. The loop computes retry count, drift
 python demos/agent_gate_real/run_real_demo.py
 ```
 
+Each scenario prints an RNOS Event Timeline and writes a structured JSON decision trace to `./rnos_logs/` for replay or analysis.
+
 ## Why It Matters
 
 This is the control layer between an autonomous coding agent and a working tree. The naive mode shows what the agent would do directly; RNOS mode shows the same loop with a safety kernel that can stop runaway retries and dangerous edits before they touch the repository.

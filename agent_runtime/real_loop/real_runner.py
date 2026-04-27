@@ -7,6 +7,9 @@ import difflib
 import re
 from typing import Literal
 
+from agent_runtime.event_formatter import format_timeline
+from agent_runtime.event_logger import save_json
+from agent_runtime.event_stream import EventStream
 from agent_runtime.rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 
 from .patcher import PatchReport
@@ -73,6 +76,8 @@ class RealModeResult:
     destructive_edits_prevented: int
     rollback_triggered: bool
     trace: tuple[RealStepTrace, ...]
+    events: tuple[dict[str, object], ...]
+    event_log_path: str
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,7 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
     rnos = RealRNOSGate()
     state = RealLoopState()
     trace: list[RealStepTrace] = []
+    event_stream = EventStream()
     wasted = 0
     refusal_step: int | None = None
     destructive_prevented = 0
@@ -156,6 +162,15 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
                 refusal_step = step
                 if report.risky_edit or report.destructive:
                     destructive_prevented += 1
+                _emit_real_event(
+                    event_stream,
+                    scenario.name,
+                    mode,
+                    step,
+                    plan,
+                    decision,
+                    context,
+                )
                 trace.append(
                     RealStepTrace(
                         step=step,
@@ -177,6 +192,15 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
             if not validation.success:
                 wasted += 1
 
+            _emit_real_event(
+                event_stream,
+                scenario.name,
+                mode,
+                step,
+                executable,
+                decision if mode == "rnos" else _allow_decision(decision),
+                context,
+            )
             trace.append(
                 RealStepTrace(
                     step=step,
@@ -192,6 +216,8 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
         repo.rollback(baseline)
         rollback_triggered = True
 
+    events = tuple(event_stream.get_events())
+    log_path = save_json(list(events))
     return RealModeResult(
         mode=mode,
         attempts=state.attempts,
@@ -202,6 +228,8 @@ def run_real_scenario(scenario: RealScenario, *, mode: str) -> RealModeResult:
         destructive_edits_prevented=destructive_prevented,
         rollback_triggered=rollback_triggered,
         trace=tuple(trace),
+        events=events,
+        event_log_path=str(log_path),
     )
 
 
@@ -342,6 +370,44 @@ def _update_state(
     state.risk_scores.append(_tool_risk(plan, result.patch_report, state))
 
 
+def _emit_real_event(
+    event_stream: EventStream,
+    scenario_name: str,
+    mode: str,
+    step: int,
+    plan: RealPlan,
+    decision: GateDecision,
+    context: dict[str, float | int | bool],
+) -> None:
+    event_stream.emit(
+        {
+            "scenario": scenario_name,
+            "mode": mode,
+            "step": step,
+            "action": plan.action,
+            "target": plan.target,
+            "entropy": decision.entropy,
+            "drift_score": float(context["drift_score"]),
+            "tool_risk": float(context["tool_risk"]),
+            "validation_failures": int(context["validation_failures"]),
+            "files_modified": int(context["files_modified"]),
+            "lines_changed": int(context["lines_changed"]),
+            "decision": decision.action,
+            "reason": "; ".join(decision.reasons),
+        }
+    )
+
+
+def _allow_decision(decision: GateDecision) -> GateDecision:
+    return GateDecision(
+        action="ALLOW",
+        entropy=decision.entropy,
+        trust=decision.trust,
+        reasons=("naive mode: RNOS not enforced",),
+        constraints=decision.constraints,
+    )
+
+
 def _format_real_result(comparison: RealScenarioComparison) -> str:
     lines = [
         f"Scenario: {comparison.scenario.name}",
@@ -370,6 +436,9 @@ def _format_real_result(comparison: RealScenarioComparison) -> str:
             f"Destructive Edits Prevented: {rnos.destructive_edits_prevented}",
             f"Rollback Triggered: {rollback}",
             f"RNOS Gate Events: {_gate_events(rnos)}",
+            f"Saved log: {rnos.event_log_path}",
+            "",
+            format_timeline(list(rnos.events)),
         ]
     )
     return "\n".join(lines)

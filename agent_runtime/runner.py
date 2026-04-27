@@ -1,9 +1,13 @@
 from dataclasses import dataclass, replace
 import logging
+from typing import Any
 from pathlib import Path
 
 from .agent import AgentState, DeterministicScenarioAgent, ScenarioSpec, constrain_plan
 from .drift_model import DriftAssessment, assess_drift
+from .event_formatter import format_timeline
+from .event_logger import save_json
+from .event_stream import EventStream
 from .risk_model import RiskAssessment, assess_tool_risk
 from .rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 from .tool_executor import ToolExecutionResult, ToolExecutor
@@ -177,6 +181,8 @@ class ModeRunResult:
     destructive_actions_prevented: int
     drift_detection_step: int | None
     trace: tuple[StepTrace, ...]
+    events: tuple[dict[str, Any], ...]
+    event_log_path: str
 
 
 @dataclass(frozen=True)
@@ -201,6 +207,7 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
     risk_scores: list[float] = []
     recent_errors: list[str] = []
     trace: list[StepTrace] = []
+    event_stream = EventStream()
     wasted = 0
     refusal_step: int | None = None
     peak_entropy = 0.0
@@ -216,6 +223,7 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
 
         risk = assess_tool_risk(plan, risk_scores)
         drift = assess_drift(plan, state)
+        context_validation_failures = state.validation_failures
         if drift_detection_step is None and drift.score >= 4.5:
             drift_detection_step = step
 
@@ -228,6 +236,20 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
             refusal_step = step
             if risk.destructive:
                 destructive_actions_prevented += 1
+            _emit_agent_event(
+                event_stream,
+                scenario.name,
+                mode,
+                step,
+                plan.tool,
+                plan.target,
+                decision,
+                drift,
+                risk,
+                context_validation_failures,
+                files_modified=0,
+                lines_changed=0,
+            )
             trace.append(
                 StepTrace(
                     step=step,
@@ -255,6 +277,20 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
             recent_errors.append(str(validation["error"]))
 
         risk_scores.append(risk.score)
+        _emit_agent_event(
+            event_stream,
+            scenario.name,
+            mode,
+            step,
+            executable_plan.tool,
+            executable_plan.target,
+            decision if mode == "rnos" else _allow_decision(decision),
+            drift,
+            risk,
+            context_validation_failures,
+            files_modified=0,
+            lines_changed=0,
+        )
         trace.append(
             StepTrace(
                 step=step,
@@ -270,6 +306,8 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
             )
         )
 
+    events = tuple(event_stream.get_events())
+    log_path = save_json(list(events))
     return ModeRunResult(
         mode=mode,
         attempts=state.attempts,
@@ -280,6 +318,8 @@ def run_agent_gate_scenario(scenario: ScenarioSpec, *, mode: str) -> ModeRunResu
         destructive_actions_prevented=destructive_actions_prevented,
         drift_detection_step=drift_detection_step,
         trace=tuple(trace),
+        events=events,
+        event_log_path=str(log_path),
     )
 
 
@@ -360,6 +400,50 @@ def _update_state(
         state.degraded = True
 
 
+def _emit_agent_event(
+    event_stream: EventStream,
+    scenario_name: str,
+    mode: str,
+    step: int,
+    action: str,
+    target: str,
+    decision: GateDecision,
+    drift: DriftAssessment,
+    risk: RiskAssessment,
+    validation_failures: int,
+    *,
+    files_modified: int,
+    lines_changed: int,
+) -> None:
+    event_stream.emit(
+        {
+            "scenario": scenario_name,
+            "mode": mode,
+            "step": step,
+            "action": action,
+            "target": target,
+            "entropy": decision.entropy,
+            "drift_score": drift.score,
+            "tool_risk": risk.score,
+            "validation_failures": validation_failures,
+            "files_modified": files_modified,
+            "lines_changed": lines_changed,
+            "decision": decision.action,
+            "reason": "; ".join(decision.reasons),
+        }
+    )
+
+
+def _allow_decision(decision: GateDecision) -> GateDecision:
+    return GateDecision(
+        action="ALLOW",
+        entropy=decision.entropy,
+        trust=decision.trust,
+        reasons=("naive mode: RNOS not enforced",),
+        constraints=decision.constraints,
+    )
+
+
 def _format_scenario_result(comparison: ScenarioComparison) -> str:
     lines = [
         f"Scenario: {comparison.scenario.name}",
@@ -389,6 +473,9 @@ def _format_scenario_result(comparison: ScenarioComparison) -> str:
             f"Destructive Actions Prevented: {rnos.destructive_actions_prevented}",
             f"Drift Detection Step: {drift_step}",
             f"RNOS Gate Events: {gate_events}",
+            f"Saved log: {rnos.event_log_path}",
+            "",
+            format_timeline(list(rnos.events)),
         ]
     )
     return "\n".join(lines)

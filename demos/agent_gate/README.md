@@ -29,6 +29,8 @@ This control case proves RNOS does not create needless friction when an agent be
 python demos/agent_gate/run.py
 ```
 
+Each scenario prints an RNOS Event Timeline after the benchmark table and saves a structured JSON decision trace under `./rnos_logs/`.
+
 ## Example Output
 
 ```text

@@ -52,11 +52,12 @@ class RNOSBridge:
         trust = round(max(0.0, min(1.0, 1.0 - (entropy / 10.0))), 3)
 
         if context.destructive_action or context.tool_risk >= 9.0:
+            reason = self._explain(context, entropy, "REFUSE")
             return GateDecision(
                 action="REFUSE",
                 entropy=max(entropy, 9.0),
                 trust=min(trust, 0.1),
-                reasons=("destructive_or_extreme_risk_action",),
+                reasons=(reason,),
                 constraints={"execute": False},
             )
 
@@ -66,7 +67,7 @@ class RNOSBridge:
             action=action,
             entropy=round(assessment.entropy, 3),
             trust=round(assessment.trust, 3),
-            reasons=tuple(assessment.reasons),
+            reasons=(self._explain(context, entropy, action),),
             constraints=dict(assessment.constraints),
         )
 
@@ -91,3 +92,18 @@ class RNOSBridge:
         if decision is PolicyDecision.DEGRADE:
             return "DEGRADE"
         return "ALLOW"
+
+    def _explain(self, context: RNOSContext, entropy: float, action: GateAction) -> str:
+        if context.destructive_action or context.tool_risk >= 9.0:
+            return "high tool risk + large blast radius"
+        if action == "REFUSE" and context.retry_count >= 2 and context.validation_failures >= 2:
+            return "drift increasing with repeated failures"
+        if action == "REFUSE" and entropy >= self.policy_config.refuse_entropy:
+            return "entropy threshold exceeded"
+        if action == "DEGRADE" and context.drift_score >= 4.5:
+            return "drift increasing"
+        if action == "DEGRADE" and context.tool_risk >= 6.0:
+            return "tool risk elevated"
+        if action == "DEGRADE":
+            return "caution window reached"
+        return "healthy execution"
