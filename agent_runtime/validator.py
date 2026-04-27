@@ -6,6 +6,7 @@ from .ast_diff import flatten_ast
 from .ast_similarity import ast_fingerprint
 from .types import ExecutionResult
 from .utils import ensure_workspace
+from .tool_executor import ToolExecutionResult
 
 
 logger = logging.getLogger(__name__)
@@ -58,3 +59,43 @@ def validate() -> ExecutionResult:
         ast_tokens=tokens,
         ast_features=features,
     )
+
+
+class GateValidator:
+    """Validation simulator for deterministic Agent Gate runs."""
+
+    def validate(
+        self,
+        result: ToolExecutionResult,
+        recent_errors: list[str] | None = None,
+    ) -> dict[str, object]:
+        recent_errors = recent_errors or []
+
+        if result.destructive:
+            return {
+                "success": False,
+                "error": "destructive action rejected by validation",
+                "confidence": 0.05,
+                "partial_success": False,
+            }
+
+        if result.success:
+            return {
+                "success": True,
+                "error": "",
+                "confidence": 0.95,
+                "partial_success": bool(result.metadata.get("partial_success", False)),
+            }
+
+        repeated = result.error in recent_errors[-3:]
+        confidence = 0.2 if repeated else 0.35
+        error = result.error
+        if repeated:
+            error = f"repeated failure: {error}"
+
+        return {
+            "success": False,
+            "error": error,
+            "confidence": confidence,
+            "partial_success": bool(result.metadata.get("partial_success", False)),
+        }
