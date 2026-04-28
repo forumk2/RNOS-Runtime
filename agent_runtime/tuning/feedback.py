@@ -39,6 +39,13 @@ def generate_feedback(context: dict[str, Any]) -> str:
             "Do not include explanations.",
             "The diff must start with --- a/<target> and +++ b/<target>, followed by a valid @@ hunk.",
         ]
+    elif failure_type == "anchor_mismatch":
+        lines = [
+            "Your patch failed to apply because the hunk anchor did not match the file.",
+            "Return a minimal edit using this format:",
+            '{ "action": "edit_file", "target": "...", "edits": [ { "line_number": X, "content": "..." } ] }',
+            "Modify only the necessary line.",
+        ]
     elif failure_type == "drift":
         lines = [
             "You are modifying unrelated files.",

@@ -262,6 +262,8 @@ def run_recovery_test(
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
             _emit_real_event(event_stream, scenario.name, "rnos_tuned", step, executable, decision, context)
             _emit_retry_budget_event(event_stream, scenario.name, "rnos_tuned", step, state)
+            if result.fallback_event is not None:
+                event_stream.emit({**result.fallback_event, "scenario": scenario.name, "mode": "rnos_tuned", "step": step})
 
             if validation.success:
                 recovered = state.validation_failures > 0 or metrics.degradations > 0 or metrics.recovery_attempts > 0

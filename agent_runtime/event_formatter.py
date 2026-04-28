@@ -56,7 +56,13 @@ def format_decision_summary(events: list[dict[str, Any]]) -> str:
     decision_events = [
         event
         for event in events
-        if str(event.get("type", "")) not in {"recovery_event", "tuning_event", "retry_budget", "outcome_event"}
+        if str(event.get("type", "")) not in {
+            "fallback_conversion",
+            "recovery_event",
+            "tuning_event",
+            "retry_budget",
+            "outcome_event",
+        }
     ]
     counts = Counter(str(event.get("decision", "ALLOW")) for event in decision_events)
     return (

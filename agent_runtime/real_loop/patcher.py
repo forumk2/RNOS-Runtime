@@ -37,6 +37,13 @@ class PatchReport:
     multi_file_edit: bool = False
     risky_edit: bool = False
     destructive: bool = False
+    failure_type: str = ""
+
+
+@dataclass(frozen=True)
+class LineEdit:
+    line_number: int
+    content: str
 
 
 _HUNK_RE = re.compile(r"@@ -(?P<old>\d+)(?:,(?P<old_count>\d+))? \+(?P<new>\d+)(?:,(?P<new_count>\d+))? @@")
@@ -57,6 +64,56 @@ def apply_unified_diff(repo_root: Path, diff: str, *, dry_run: bool = False) -> 
         _apply_file_patch(repo_root, file_patch)
 
     return report
+
+
+def classify_patch_failure(error: str) -> str:
+    lowered = error.lower()
+    if "hunk failed" in lowered or "context mismatch" in lowered:
+        return "anchor_mismatch"
+    if "invalid" in lowered or "missing" in lowered or "no file patches" in lowered:
+        return "malformed_output"
+    return "unknown"
+
+
+def convert_patch_to_line_edits(
+    patch: str,
+    file_content: str,
+    *,
+    target: str = "",
+    max_edits: int = 2,
+) -> list[LineEdit]:
+    parsed = _parse_unified_diff(patch)
+    if len(parsed) != 1 or len(parsed[0].hunks) != 1:
+        return []
+    file_patch = parsed[0]
+    display_path = file_patch.old_path if file_patch.new_path == "/dev/null" else file_patch.new_path
+    if target and display_path != target:
+        return []
+
+    lines = file_content.splitlines(keepends=True)
+    hunk = file_patch.hunks[0]
+    removed = [line[1:] for line in hunk.lines if line.startswith("-")]
+    added = [line[1:] for line in hunk.lines if line.startswith("+")]
+
+    if removed and len(removed) == len(added) and len(added) <= max_edits:
+        start = _find_sequence(lines, removed)
+        if start is None:
+            return []
+        return [
+            LineEdit(line_number=start + offset + 1, content=added[offset].rstrip("\n"))
+            for offset in range(len(added))
+        ]
+
+    if not removed and 0 < len(added) <= max_edits:
+        insertion_index = _find_insertion_line(lines, hunk)
+        if insertion_index is None:
+            return []
+        existing = lines[insertion_index] if insertion_index < len(lines) else ""
+        if existing.strip():
+            return []
+        return [LineEdit(line_number=insertion_index + 1, content="".join(added).rstrip("\n"))]
+
+    return []
 
 
 def _parse_unified_diff(diff: str) -> list[FilePatch]:
@@ -115,6 +172,35 @@ def _parse_unified_diff(diff: str) -> list[FilePatch]:
     if not patches:
         raise PatchError("no file patches found")
     return patches
+
+
+def _find_sequence(lines: list[str], needle: list[str]) -> int | None:
+    if not needle:
+        return None
+    for index in range(0, len(lines) - len(needle) + 1):
+        window = lines[index : index + len(needle)]
+        if all(_same_text_line(left, right) for left, right in zip(window, needle)):
+            return index
+    return None
+
+
+def _find_insertion_line(lines: list[str], hunk: Hunk) -> int | None:
+    previous_context = ""
+    for line in hunk.lines:
+        if line.startswith("+"):
+            break
+        if line.startswith(" "):
+            previous_context = line[1:]
+    if not previous_context:
+        return None
+    for index, line in enumerate(lines):
+        if _same_text_line(line, previous_context):
+            return index + 1
+    return None
+
+
+def _same_text_line(left: str, right: str) -> bool:
+    return left.rstrip("\r\n") == right.rstrip("\r\n")
 
 
 def _apply_file_patch(repo_root: Path, file_patch: FilePatch) -> None:

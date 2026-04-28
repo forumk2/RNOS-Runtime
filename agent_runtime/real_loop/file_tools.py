@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .patcher import PatchError, PatchReport, apply_unified_diff
+from .patcher import LineEdit, PatchError, PatchReport, apply_unified_diff
 
 
 class SandboxViolation(ValueError):
@@ -37,6 +37,31 @@ class FileTools:
             return apply_unified_diff(self.repo_root, diff, dry_run=dry_run)
         except PatchError as exc:
             raise SandboxViolation(str(exc)) from exc
+
+    def apply_line_edits(self, path: str, edits: list[LineEdit]) -> PatchReport:
+        if not edits:
+            raise SandboxViolation("line edit fallback produced no edits")
+        if len(edits) > 2:
+            raise SandboxViolation("line edit fallback exceeds edit limit")
+
+        target = self._resolve(path)
+        if not target.exists():
+            raise SandboxViolation(f"line edit target does not exist: {path}")
+        data = target.read_bytes()
+        self._reject_binary(data, path)
+        original = data.decode("utf-8")
+        had_newline = original.endswith("\n")
+        lines = original.splitlines()
+
+        for edit in sorted(edits, key=lambda item: item.line_number, reverse=True):
+            index = edit.line_number - 1
+            if index < 0 or index >= len(lines):
+                raise SandboxViolation(f"line edit out of range: {edit.line_number}")
+            replacement = edit.content.splitlines()
+            lines[index : index + 1] = replacement if replacement else [""]
+
+        target.write_text("\n".join(lines) + ("\n" if had_newline else ""), encoding="utf-8")
+        return PatchReport(files_modified=(path,), lines_changed=len(edits))
 
     def _resolve(self, path: str) -> Path:
         if Path(path).is_absolute():

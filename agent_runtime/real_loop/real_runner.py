@@ -16,7 +16,7 @@ from agent_runtime.live.session import LiveSession
 from agent_runtime.rnos_bridge import GateDecision, RNOSBridge, RNOSContext
 
 from .file_tools import SandboxViolation
-from .patcher import PatchReport
+from .patcher import PatchReport, classify_patch_failure, convert_patch_to_line_edits
 from .repo_adapter import RepoAdapter
 from .test_runner import TestResult, TestRunner
 
@@ -111,6 +111,7 @@ class ExecutionResult:
     output: str
     patch_report: PatchReport = field(default_factory=PatchReport)
     test_result: TestResult | None = None
+    fallback_event: dict[str, object] | None = None
 
 
 class DeterministicRealAgent:
@@ -279,6 +280,8 @@ def run_real_scenario(
             validation = result.test_result if result.test_result is not None else test_runner.run()
             _update_state(state, plan, result, validation, repo.modified_files(baseline), decision)
             _emit_retry_budget_event(event_stream, scenario.name, mode, step, state)
+            if result.fallback_event is not None:
+                event_stream.emit({**result.fallback_event, "scenario": scenario.name, "mode": mode, "step": step})
 
             if not validation.success:
                 wasted += 1
@@ -378,6 +381,9 @@ def _execute_real(repo: RepoAdapter, test_runner: TestRunner, plan: RealPlan) ->
         try:
             report = repo.tools.apply_patch(plan.diff)
         except SandboxViolation as exc:
+            fallback = _try_line_edit_fallback(repo, plan, str(exc))
+            if fallback is not None:
+                return fallback
             return ExecutionResult(
                 success=False,
                 output=f"patch rejected: {exc}",
@@ -396,19 +402,59 @@ def _execute_real(repo: RepoAdapter, test_runner: TestRunner, plan: RealPlan) ->
     return ExecutionResult(success=True, output="finished")
 
 
+def _try_line_edit_fallback(repo: RepoAdapter, plan: RealPlan, error: str) -> ExecutionResult | None:
+    failure_type = classify_patch_failure(error)
+    if failure_type not in {"anchor_mismatch", "malformed_output"} or not plan.target:
+        return None
+    try:
+        content = repo.tools.read_file(plan.target)
+        edits = convert_patch_to_line_edits(plan.diff, content, target=plan.target, max_edits=2)
+        if not edits:
+            return None
+        report = repo.tools.apply_line_edits(plan.target, edits)
+    except (SandboxViolation, ValueError):
+        return None
+
+    return ExecutionResult(
+        success=True,
+        output=f"fallback line_edit applied to {plan.target}",
+        patch_report=report,
+        fallback_event={
+            "type": "fallback_conversion",
+            "action": "fallback_line_edit",
+            "target": plan.target,
+            "entropy": 0.0,
+            "drift_score": 0.0,
+            "tool_risk": 2.0,
+            "validation_failures": 0,
+            "files_modified": 1,
+            "lines_changed": report.lines_changed,
+            "decision": "ALLOW",
+            "reason": "converted near-valid diff to bounded line edit",
+            "from": "diff",
+            "to": "line_edit",
+            "method": "line_edit",
+            "original_failure": failure_type,
+            "success": True,
+        },
+    )
+
+
 def _preflight_patch(repo: RepoAdapter, plan: RealPlan) -> PatchReport:
     if plan.action not in {"apply_patch", "edit_file"}:
         return PatchReport()
     try:
         _assert_patch_sane(repo, plan)
         return repo.tools.apply_patch(plan.diff, dry_run=True)
-    except SandboxViolation:
+    except SandboxViolation as exc:
+        failure_type = classify_patch_failure(str(exc))
         return PatchReport(
             files_modified=(plan.target,) if plan.target else (),
             lines_changed=0,
             large_edit=False,
-            risky_edit=True,
+            risky_edit=failure_type != "anchor_mismatch",
             destructive=False,
+            failure_type=failure_type,
         )
 
 
@@ -434,7 +480,9 @@ def _build_context(plan: RealPlan, report: PatchReport, state: RealLoopState) ->
     drift_score = _drift_score(plan, state)
     risk_escalation = bool(state.risk_scores and tool_risk >= 6.0 and tool_risk > max(state.risk_scores[-3:]) + 2.0)
     repeated_plan_count = state.plan_texts.count(plan.text)
-    malformed_output = report.risky_edit and not report.large_edit and report.lines_changed == 0
+    malformed_output = report.failure_type == "malformed_output" or (
+        report.risky_edit and not report.large_edit and report.lines_changed == 0
+    )
     return {
         "entropy": min(repeated_plan_count * 2.5, 7.5),
         "retry_count": state.retry_count,
