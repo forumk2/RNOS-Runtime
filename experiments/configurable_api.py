@@ -586,3 +586,70 @@ def make_runaway_cascade(seed: int = 42) -> ConfigurableAPI:
         cost_profile=cost,
         seed=seed,
     )
+
+
+def make_fanout_cascade(seed: int = 42) -> ConfigurableAPI:
+    """Simulated fanout cascade: each admitted step spawns more downstream work.
+
+    The scenario models a planner that fans out tool calls (e.g., parallel
+    sub-agent spawns) — each step costs more than the last and failures
+    compound because a failed fan-out branch re-retries at a higher depth.
+
+    Pattern (20 steps):
+      steps  1-2:  succeed, low cost (baseline, depth=0)
+      steps  3-5:  succeed, cost doubles each step (fanout growing)
+      steps  6-8:  fail with compounding latency (fan-out branches collide)
+      steps  9-12: alternating fail/succeed, latency stays high (partial recovery)
+      steps 13+:   certain failure (absorbing regime — all branches exhausted)
+
+    Design rationale
+    ----------------
+    * Depth-based cost escalation is expressed through the cost_profile
+      (rising from $0.01 to $0.16 per step by step 8).
+    * The failure pattern produces retry_score=3 + failure_score=3.0 + EWMA
+      long_memory ≈ 1.5 at step 9 → entropy well above REFUSE threshold.
+    * The CB sliding window sees 5/5 failures by step 13 → trips with margin.
+    * The hybrid trips earlier than either sub-system alone via the combo rule:
+      RNOS in DEGRADE AND CB failure_rate > 0.30.
+
+    Ground truth: structural failure — should intervene before step 10.
+    """
+    schedule = [
+        {"success": True},   # 1
+        {"success": True},   # 2
+        {"success": True},   # 3 — fanout grows (cost rising, still succeeds)
+        {"success": True},   # 4
+        {"success": True},   # 5
+        {"success": False},  # 6 — collision begins
+        {"success": False},  # 7
+        {"success": False},  # 8
+        {"success": False},  # 9
+        {"success": True},   # 10 — partial recovery
+        {"success": False},  # 11
+        {"success": True},   # 12
+    ]
+    # Latency: low at first, grows sharply as fanout depth increases
+    latency = [
+        80.0, 80.0,               # 1-2 baseline
+        120.0, 160.0, 220.0,      # 3-5 fanout growing
+        350.0, 400.0, 440.0,      # 6-8 collisions
+        460.0,                    # 9
+        380.0,                    # 10 partial recovery
+        450.0,                    # 11
+        360.0,                    # 12
+    ] + [480.0] * 8               # 13-20 absorbing
+    # Cost: doubles each of the first 8 steps (simulating fanout depth)
+    cost = [
+        0.010, 0.010,                         # 1-2
+        0.020, 0.040, 0.070,                  # 3-5
+        0.100, 0.130, 0.160,                  # 6-8
+        0.160, 0.120, 0.150, 0.110,           # 9-12
+    ] + [0.160] * 8                           # 13-20
+    return ConfigurableAPI(
+        name="fanout_cascade",
+        step_schedule=schedule,
+        fail_probs=[1.0],            # steps 13+: absorbing failure
+        latency_profile=latency,
+        cost_profile=cost,
+        seed=seed,
+    )

@@ -303,6 +303,7 @@ def run_agent(
                 f"rnos={hybrid_decision.rnos_decision} "
                 f"cb_state={hybrid_decision.cb_state} "
                 f"cb_failure_rate={hybrid_decision.cb_failure_rate:.3f} "
+                f"lambda={hybrid_decision.coherence_lambda:.3f} "
                 f"hybrid={hybrid_decision.decision} "
                 f"trigger={hybrid_decision.trigger_source}"
             )

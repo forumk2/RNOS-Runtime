@@ -109,7 +109,7 @@ def evaluate_claim(claim: str, context: dict[str, Any]) -> dict[str, Any]:
 
     results = [evaluator(claim, ctx, features) for evaluator in evaluators]
     if bool(ctx.get("adversarial_mode")):
-        results = _force_adversarial_rejection(results, features)
+        results = _apply_adversarial_escalation(results)
 
     return {
         "claim": claim,
@@ -189,6 +189,34 @@ def aggregate_legitimacy(results: list[DomainResult]) -> dict[str, Any]:
     }
 
 
+def _evidence_confidence(features: Mapping[str, bool]) -> float:
+    """Derive a confidence score from observable evidence quality.
+
+    Replaces per-evaluator hardcoded constants (0.81, 0.84, 0.88 …) that were
+    not tied to any measured calibration data.  The scale here is still
+    heuristic, but it is at least *derived* from the claim's evidence flags
+    rather than being arbitrary per-domain magic numbers.
+
+    Scale:
+        0.30  — no evidence (pure theoretical claim)
+        +0.20 — synthetic / deterministic benchmark evidence
+        +0.20 — replay / trace / seed-reproducible benchmark evidence
+        +0.30 — production / incident / SLO evidence (highest weight)
+        +0.10 — formal control / proof (adds rigour in control/physics domains)
+    Clamped to [0.10, 0.90].  Values at 0.90 still signal unresolved gaps.
+    """
+    score = 0.30
+    if features.get("synthetic_evidence"):
+        score += 0.20
+    if features.get("benchmark_evidence"):
+        score += 0.20
+    if features.get("production_evidence"):
+        score += 0.30
+    if features.get("formal_control"):
+        score += 0.10
+    return round(max(0.10, min(0.90, score)), 2)
+
+
 def _extract_features(claim: str, context: Mapping[str, Any]) -> dict[str, bool]:
     blob = " ".join([claim, _serialize_context(context)]).lower()
     return {
@@ -213,7 +241,6 @@ def _evaluate_distributed_systems(
     features: Mapping[str, bool],
 ) -> DomainResult:
     verdict = "partially_valid" if features["benchmark_evidence"] else "unclear"
-    confidence = 0.81 if (features["retry_related"] or features["fanout_related"]) else 0.72
 
     if features["fanout_related"]:
         objection = (
@@ -271,7 +298,7 @@ def _evaluate_distributed_systems(
             "queue-depth admission control",
             "bulkheads",
         ],
-        confidence=confidence,
+        confidence=_evidence_confidence(features),
     )
 
 
@@ -282,7 +309,6 @@ def _evaluate_control_systems(
 ) -> DomainResult:
     has_controller_claim = features["policy_related"] or features["wrk4_related"] or features["retry_related"]
     verdict = "invalid" if has_controller_claim and not features["formal_control"] else "partially_valid"
-    confidence = 0.86 if has_controller_claim else 0.69
 
     objection = (
         "This is a threshold supervisor without an identified plant, hysteresis argument, "
@@ -314,7 +340,7 @@ def _evaluate_control_systems(
             "supervisory hybrid automaton",
             "saturation controller",
         ],
-        confidence=confidence,
+        confidence=_evidence_confidence(features),
     )
 
 
@@ -358,7 +384,7 @@ def _evaluate_ml_researcher(
             "anomaly detector",
             "proxy reward",
         ],
-        confidence=0.84 if features["entropy_related"] else 0.76,
+        confidence=_evidence_confidence(features),
     )
 
 
@@ -368,7 +394,6 @@ def _evaluate_sre(
     features: Mapping[str, bool],
 ) -> DomainResult:
     verdict = "valid" if features["production_evidence"] else "partially_valid"
-    confidence = 0.79 if (features["retry_related"] or features["fanout_related"]) else 0.71
     objection = (
         "Operational legitimacy depends on blast-radius reduction and operator-visible reasoning, "
         "not just a clean refusal taxonomy."
@@ -400,7 +425,7 @@ def _evaluate_sre(
             "retry budgets",
             "admission control",
         ],
-        confidence=confidence,
+        confidence=_evidence_confidence(features),
     )
 
 
@@ -417,7 +442,7 @@ def _evaluate_physicist(
             failure_modes=["A borrowed entropy label can still bias interpretation even when it is not needed."],
             what_would_prove_it=["Either formalize the entropy analogy or rename the quantity to avoid category confusion."],
             existing_equivalents=["potential function", "hazard score"],
-            confidence=0.41,
+            confidence=_evidence_confidence(features),
         )
 
     verdict = "partially_valid" if features["formal_control"] else "invalid"
@@ -446,45 +471,45 @@ def _evaluate_physicist(
             "order parameter",
             "hazard score",
         ],
-        confidence=0.88,
+        confidence=_evidence_confidence(features),
     )
 
 
-def _force_adversarial_rejection(
-    results: list[DomainResult],
-    features: Mapping[str, bool],
-) -> list[DomainResult]:
-    if any(
-        result["verdict"] == "invalid"
-        and str(result["core_objection"]).startswith("Strong rejection:")
-        for result in results
-    ):
-        return results
+def _apply_adversarial_escalation(results: list[DomainResult]) -> list[DomainResult]:
+    """Adversarial escalation: each domain surfaces its strongest unaddressed objection.
 
-    preferred_domains = [
-        "Physicist" if features["entropy_related"] else "",
-        "Control Systems Engineer",
-        "Machine Learning Researcher",
-    ]
-    for domain in preferred_domains:
-        if not domain:
+    For every result that is not already ``invalid``:
+    1. The first ``failure_mode`` entry is identified as the single strongest
+       unaddressed concern (ordered by specification in each evaluator).
+    2. That concern is promoted to an ``escalation_note`` field in the result.
+    3. If the verdict is ``valid`` and at least one failure mode exists, the
+       verdict is downgraded to ``partially_valid`` because the escalation
+       reveals that not all objections have been resolved.
+
+    This replaces the old ``_force_adversarial_rejection`` which relabelled a
+    verdict to ``invalid`` without adding new reasoning — a dishonest escalation
+    that could not be traced back to a specific unaddressed concern.
+    """
+    escalated = deepcopy(results)
+    for result in escalated:
+        if result["verdict"] == "invalid":
+            # Already the harshest verdict; nothing to escalate.
             continue
-        for result in results:
-            if result["domain"] == domain:
-                forced = deepcopy(results)
-                for forced_result in forced:
-                    if forced_result["domain"] == domain:
-                        forced_result["verdict"] = "invalid"
-                        if not str(forced_result["core_objection"]).startswith("Strong rejection:"):
-                            forced_result["core_objection"] = (
-                                "Strong rejection: " + forced_result["core_objection"]
-                            )
-                        forced_result["failure_modes"] = [
-                            "Adversarial mode assumes expert review escalates the weakest unsupported assumption first."
-                        ] + forced_result["failure_modes"]
-                        forced_result["confidence"] = max(0.9, float(forced_result["confidence"]))
-                        return forced
-    return results
+
+        failure_modes = result.get("failure_modes", [])
+        if not failure_modes:
+            continue
+
+        # Surface the first (strongest) unaddressed concern as an explicit note.
+        result["escalation_note"] = (
+            f"Strongest unaddressed concern ({result['domain']}): {failure_modes[0]}"
+        )
+
+        # Downgrade ``valid`` if any failure mode is unresolved.
+        if result["verdict"] == "valid":
+            result["verdict"] = "partially_valid"
+
+    return escalated
 
 
 def _result(

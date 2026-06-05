@@ -56,7 +56,8 @@ def compute_runtime_coherence(step_trace: Sequence[Mapping[str, Any]]) -> dict[s
         if phase not in _PHASE_PRESSURE:
             raise ValueError(f"Unsupported phase for step {step}: {phase!r}")
 
-        s_pe = 1 if decision == "EXECUTE" else 0
+        # s_pe: planner *intended* to call a tool (planner-intent axis)
+        s_pe = 1 if planner_emitted_tool_call else 0
         if decision == "EXECUTE":
             s_pg = 1
         elif decision in {"BLOCKED", "STOPPED"} and planner_emitted_tool_call:
@@ -64,6 +65,7 @@ def compute_runtime_coherence(step_trace: Sequence[Mapping[str, Any]]) -> dict[s
         else:
             s_pg = 1
         s_pt = 1 if tool_result in {"SUCCESS", "FAILURE"} else 0
+        # s_et: tool actually executed (execution axis — orthogonal to s_pe)
         s_et = 1 if decision == "EXECUTE" else 0
         r_t = (s_pe + s_pg + s_pt + s_et) / 4.0
 

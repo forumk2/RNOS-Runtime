@@ -61,27 +61,29 @@ _TRACE_PATH = _REPO_ROOT / "logs" / "exp2_rnos_trace.jsonl"
 # RNOS policy config for Experiment 2
 # ---------------------------------------------------------------------------
 #
-# Context:  the entropy formula produces a "structural floor" of ~4.0 for
-# any run beyond step 3 because:
-#   repeated_tool = 2  (always calling the same API name)
-#   cost_score    = 2.0 (caps after cumulative_calls >= 7)
+# Re-tuned 2026-06-04 after entropy.py rework:
+#   * cost_score now uses a marginal waste ratio instead of cumulative×0.3.
+#     The old formula saturated to 2.0 after ~7 calls, creating a ~4.0
+#     structural floor (repeated_tool=2 + cost=2) that forced these high
+#     thresholds.  The new formula's floor is ~2.0–2.5 for healthy runs
+#     (repeated_tool=2, base_cost≤0.5, no waste on successes), so the
+#     thresholds come down proportionally.
+#   * long_memory_score (EWMA) adds up to 2.0 for sustained failures, so
+#     the effective ceiling is higher — but only when warranted.
 #
-# Default thresholds (3.0 / 6.0) would therefore DEGRADE every healthy run
-# and produce meaningless selectivity scores.  The thresholds below are
-# calibrated so that:
+# Calibration targets (depth=0 in exp harness; trust gates disabled):
 #
-#   transient_blip  (1 failure, peak entropy ~4.8)  -> ALLOW throughout
-#   rough_patch     (3 failures, peak entropy ~8.7)  -> ALLOW throughout
+#   transient_blip  (1 failure, peak entropy ~3.8)   -> ALLOW throughout
+#   rough_patch     (3 failures, peak entropy ~6.2)   -> ALLOW throughout
 #   runaway_cascade (certain failure by step 5)
-#     -> DEGRADE at step 7 (entropy ~10.7), REFUSE at step 8 (entropy ~11.3)
+#     -> DEGRADE at step 6 (entropy ~7.7), REFUSE at step 7 (entropy ~10.5)
 #
-# Trust gates are disabled (threshold -0.1, below the min trust value of 0)
-# because the trust formula's entropy penalty creates near-perfect correlation
-# with the entropy gate, causing double-counting for sequential API scenarios.
+# Trust gates remain disabled (threshold -0.1) for the same reason as
+# before: entropy penalty in trust creates double-counting.
 
 EXP2_POLICY = PolicyConfig(
-    degrade_entropy=9.0,
-    refuse_entropy=11.0,
+    degrade_entropy=7.5,
+    refuse_entropy=10.0,
     degrade_trust=-0.1,   # disabled: entropy is the sole gate
     refuse_trust=-0.1,    # same
 )
