@@ -23,6 +23,50 @@ RNOS terminated at step 4. An unprotected baseline ran all 20 steps; 18 failed. 
 
 ---
 
+## Multi-Scenario Evaluation (30 seeds × 4 scenarios × 3 modes × 3 personas = 1080 runs)
+
+The single-seed result above is representative of cascade-failure behaviour but does not characterise where the gate breaks.  Running a full sweep across seeds, scenarios, and personas reveals the operating curve:
+
+### Scenarios
+
+| Scenario | Description | Expected RNOS behaviour |
+|---|---|---|
+| `cascade` | Stable × 2, probabilistic × 3 (50% fail), then guaranteed fail | Refuse before or at step 10 |
+| `flaky` | Independent 30% failure rate, no phase structure | Tolerate — no refuse |
+| `recovering` | 80% failure for first 4 calls, then 5% | Tolerate — wait for recovery |
+| `stable` | 2% background failure rate | Never refuse |
+
+### Gate results at default thresholds (degrade=3.0, refuse=6.0)
+
+```
+Cascade containment (refused by step 10):  100%   (90/90 RNOS runs)
+False refusal — stable scenario:            100%   (90/90 RNOS runs, stopped at step 4)
+False refusal — recovering scenario:        100%   (90/90 RNOS runs, stopped at step 4)
+```
+
+**What this means:** At the default thresholds, RNOS terminates every run by step 4 regardless of the actual failure rate.  The structural entropy signals — `repeated_tool` (+2.0) from calling the same API every step, plus growing `depth_score` (+0.6/step) and `cost_score` (+0.3/step) — push entropy above the DEGRADE threshold (3.0) at step 3 independent of whether any failures have occurred.  RNOS is an effective early-containment gate for cascade scenarios, but in its current calibration it cannot distinguish a genuinely stable API from a collapsing one when the tool is called in a tight loop.
+
+### Operating curve
+
+The threshold sweep (`scripts/threshold_sweep.py`) maps false-refusal rate vs. missed-containment rate across 42 (degrade_threshold, refuse_threshold) pairs.  At every tested combination, the cascade containment rate is 100% — the structural entropy signal is sufficient to fire on cascade before step 10 at all thresholds tested.  The separation problem is symmetric: raising thresholds reduces false refusals on stable/recovering but cannot eliminate them without also allowing recovery periods that are structurally indistinguishable from cascade onset.
+
+Run the full evaluation:
+
+```bash
+# 1080-run harness (< 1 second dry-run)
+python scripts/eval_harness.py --seeds 30 --tag full
+
+# Threshold sensitivity sweep (42 grid points)
+python scripts/threshold_sweep.py --seeds 30 --tag full
+
+# Report + charts
+python scripts/eval_report.py --tag full
+```
+
+Charts are written to `results/`: box plots by mode, per-scenario entropy progressions, and a threshold sensitivity heatmap (`results/threshold_heatmap_full.png`).
+
+---
+
 ## Live Studio Streaming
 
 RNOS Runtime can stream local-only events into RNOS Studio's Log Viewer tab. Live mode is additive: normal JSON log generation still runs, and demos continue to work if no live server is running.

@@ -10,19 +10,24 @@ from .base import ToolResult
 class UnstableAPI:
     """Stateful unstable API simulation with worsening behavior over time."""
 
-    def __init__(self) -> None:
+    def __init__(self, rng: random.Random | None = None) -> None:
         self.call_count = 0
         self.failure_streak = 0
+        # When rng is None the module-level random state is used, preserving the
+        # original behaviour for callers that seed via random.seed() before
+        # constructing this class (e.g. scripts/run_agent.py).
+        self._rng = rng
 
     def call(self) -> tuple[bool, dict]:
         self.call_count += 1
+        _rand = self._rng.random if self._rng is not None else random.random
 
         if self.call_count <= 2:
             self.failure_streak = 0
             return True, {"status": 200, "phase": "stable"}
 
         if self.call_count <= 5:
-            success = random.random() > 0.4
+            success = _rand() > 0.4
             if success:
                 self.failure_streak = 0
                 return True, {"status": 200, "phase": "unstable"}
