@@ -21,6 +21,7 @@ class StepOutcome:
     cost: float
     step: int
     consecutive_failures: int  # updated count *after* this step
+    goal_reached: bool = False  # True once productive_goal successes have accumulated
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -54,6 +55,7 @@ class ConfigurableAPI:
         cost_profile: list[float] | None = None,
         compound_factor: float = 1.0,
         seed: int = 42,
+        productive_goal: int = 0,
     ) -> None:
         self.name = name
         self._step_schedule: list[dict[str, Any]] = step_schedule or []
@@ -65,6 +67,16 @@ class ConfigurableAPI:
         self._rng = random.Random(seed)
         self._step = 0
         self._consecutive_failures = 0
+        self._productive_goal: int = productive_goal
+        self._productive_successes: int = 0
+
+    @property
+    def productive_goal(self) -> int:
+        return self._productive_goal
+
+    @property
+    def productive_successes(self) -> int:
+        return self._productive_successes
 
     # ------------------------------------------------------------------
     # Core interface
@@ -99,8 +111,14 @@ class ConfigurableAPI:
         # State update --------------------------------------------------
         if success:
             self._consecutive_failures = 0
+            self._productive_successes += 1
         else:
             self._consecutive_failures += 1
+
+        goal_reached = (
+            self._productive_goal > 0
+            and self._productive_successes >= self._productive_goal
+        )
 
         return StepOutcome(
             success=success,
@@ -108,6 +126,7 @@ class ConfigurableAPI:
             cost=cost,
             step=step,
             consecutive_failures=self._consecutive_failures,
+            goal_reached=goal_reached,
         )
 
     def reset(self) -> None:
@@ -115,6 +134,7 @@ class ConfigurableAPI:
         self._rng = random.Random(self._seed)
         self._step = 0
         self._consecutive_failures = 0
+        self._productive_successes = 0
 
 
 # ---------------------------------------------------------------------------
@@ -651,5 +671,88 @@ def make_fanout_cascade(seed: int = 42) -> ConfigurableAPI:
         fail_probs=[1.0],            # steps 13+: absorbing failure
         latency_profile=latency,
         cost_profile=cost,
+        seed=seed,
+    )
+
+
+def make_recoverable_burst(seed: int = 42, M: int = 5) -> ConfigurableAPI:
+    """Shared opening with cascading_burst; diverges to genuine recovery after step 9.
+
+    Steps 1-2:   success, 80 ms  (identical to cascading_burst opening)
+    Steps 3-9:   consecutive failures, 400-460 ms  (identical to cascading_burst)
+    Steps 10-13: graded recovery (fail_probs 0.70, 0.50, 0.30, 0.10)
+    Steps 14+:   reliable success (fail_probs 0.0)
+
+    The early window [1..9] is drawn from the **same distribution** as
+    cascading_burst[1..9].  A controller observing only those steps has no
+    signal to distinguish the two scenarios — any threshold that fires on
+    cascading_burst will also fire here (false positive).
+
+    productive_goal = M (default 5).  Steps 1-2 bank 2 successes; M-2 more
+    are needed from the recovery phase.  With 4 graded + unlimited certain
+    steps, baseline reaches goal in ~100% of seeds.
+
+    Ground truth: recoverable — should NOT permanently intervene.
+    Refusal here is always a false positive; temporary DEGRADE is acceptable.
+    """
+    # Steps 1-9: byte-for-byte identical to make_cascading_burst
+    schedule = [
+        {"success": True},   # 1
+        {"success": True},   # 2
+        {"success": False},  # 3 — burst begins (shared with cascading_burst)
+        {"success": False},  # 4
+        {"success": False},  # 5
+        {"success": False},  # 6
+        {"success": False},  # 7
+        {"success": False},  # 8
+        {"success": False},  # 9
+    ]
+    # Stochastic recovery beyond the schedule; last value extended as 0.0.
+    fail_probs = [0.70, 0.50, 0.30, 0.10, 0.0]   # steps 10-14, then 0.0
+
+    latency = [
+        80.0,  80.0,          # 1-2 stable (identical to cascading_burst)
+        400.0, 415.0, 430.0,  # 3-5 burst onset (identical)
+        440.0, 450.0, 455.0,  # 6-8 escalating (identical)
+        460.0,                # 9
+        420.0, 350.0, 250.0, 150.0,  # 10-13 recovery — latency drops
+    ] + [80.0] * 17           # 14-30 stable
+
+    cost = (
+        [0.010, 0.010]                           # 1-2 (identical to cascading_burst)
+        + [0.020 + i * 0.005 for i in range(7)]  # 3-9 (identical)
+        + [0.030, 0.020, 0.015, 0.010]           # 10-13 recovery
+        + [0.010] * 17                           # 14-30
+    )
+    return ConfigurableAPI(
+        name="recoverable_burst",
+        step_schedule=schedule,
+        fail_probs=fail_probs,
+        latency_profile=latency,
+        cost_profile=cost,
+        productive_goal=M,
+        seed=seed,
+    )
+
+
+def make_benign(seed: int = 42, M: int = 5) -> ConfigurableAPI:
+    """Healthy scenario: very low failure rate, goal reachable after ~6 steps.
+
+    All steps are probabilistic (5% failure rate).  Expected goal step ≈ 6
+    (M/0.95 ≈ 5.3 successes needed; latency and cost are flat-baseline).
+
+    No controller should fire REFUSE on this scenario.  Refusal here is
+    always a false positive.
+
+    productive_goal = M (default 5).
+
+    Ground truth: benign — should not intervene at all.
+    """
+    return ConfigurableAPI(
+        name="benign",
+        fail_probs=[0.05],      # 5% failure throughout
+        latency_profile=[80.0],
+        cost_profile=[0.010],
+        productive_goal=M,
         seed=seed,
     )
