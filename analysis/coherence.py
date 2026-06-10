@@ -1,4 +1,8 @@
-"""Runtime Coherence Metrics v0.1 over execution traces."""
+"""Offline coherence analysis over RNOS execution traces.
+
+This module is NOT wired into RNOSRuntime.evaluate(). It is an offline
+analysis tool only and has no effect on runtime decisions.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ def compute_runtime_coherence(step_trace: Sequence[Mapping[str, Any]]) -> dict[s
             "table": [],
             "summary": empty_summary,
             "interpretation": [
-                "coherent failure: not observed in this trace",
+                "synchronized_failure: not observed in this trace",
                 "desynchronized loop: not observed in this trace",
             ],
             "r_series": [],
@@ -168,13 +172,13 @@ def format_runtime_coherence_report(report: Mapping[str, Any]) -> str:
 
 def _build_interpretation(table: Sequence[Mapping[str, Any]]) -> list[str]:
     """Return strict, trace-bound interpretation lines."""
-    coherent_run = _find_coherent_failure_run(table)
+    coherent_run = _find_synchronized_failure_run(table)
     if coherent_run is None:
-        coherent_line = "coherent failure: not observed in this trace"
+        coherent_line = "synchronized_failure: not observed in this trace"
     else:
         start_step, end_step, start_h, end_h = coherent_run
         coherent_line = (
-            f"coherent failure: enters at step {end_step}; high r_t persists "
+            f"synchronized_failure: enters at step {end_step}; high r_t persists "
             f"while H_t rises {start_h:.3f}->{end_h:.3f}"
         )
 
@@ -191,10 +195,14 @@ def _build_interpretation(table: Sequence[Mapping[str, Any]]) -> list[str]:
     return [coherent_line, desync_line]
 
 
-def _find_coherent_failure_run(
+def _find_synchronized_failure_run(
     table: Sequence[Mapping[str, Any]],
 ) -> tuple[int, int, float, float] | None:
-    """Find the first consecutive run with high r_t and strictly rising H_t."""
+    """Find the first consecutive run with high r_t and strictly rising H_t.
+
+    Requires both h_is_rising AND failures_are_rising — structurally impossible
+    when tool failure count is zero (e.g. confident-wrong runs).
+    """
     best_run: tuple[int, int, float, float] | None = None
     start_index: int | None = None
 

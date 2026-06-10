@@ -52,7 +52,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 from baselines.adaptive_circuit_breaker import AdaptiveCircuitBreaker
 from baselines.circuit_breaker import CircuitBreaker
 from experiments.experiment_2 import EXP2_POLICY
-from rnos.coherence import compute_runtime_coherence
+from analysis.coherence import compute_runtime_coherence
 
 # Pre-initialise rnos.runtime logger at WARNING level BEFORE any RNOSRuntime
 # is created.  rnos/logger.py's get_logger() checks `if logger.handlers`
@@ -101,7 +101,6 @@ _MAX_STEPS = N_STEPS   # 25
 _DEFAULT_POLICY = PolicyConfig()                         # degrade=3.0, refuse=6.0
 # Canonical policy: what exp-5 actually used
 # NOTE: EXP2_POLICY in experiments/experiment_2.py is degrade=7.5, refuse=10.0
-# The comment in run_experiment_5.py ("degrade=9.0, refuse=11.0") is incorrect.
 _CANONICAL_POLICY = EXP2_POLICY                          # degrade=7.5, refuse=10.0
 
 _POLICY_SETS = [
@@ -183,7 +182,7 @@ class StepRecord:
 def _compute_lambda_proxy_series(records: list[StepRecord]) -> list[float]:
     """Compute the rolling 8-step lambda proxy over a trace.
 
-    Mirrors HybridController._coherence_lambda_proxy() but applied post-hoc
+    Mirrors HybridController._lambda_success_proxy() but applied post-hoc
     to a recorded trace rather than live.  Returns one value per step.
     """
     window: deque[StepRecord] = deque(maxlen=8)
@@ -834,9 +833,7 @@ def _build_report(
         "",
         "**Canonical threshold set:** `EXP2_POLICY` in `experiments/experiment_2.py` is",
         "`degrade_entropy=7.5, refuse_entropy=10.0`.",
-        "The comment in `run_experiment_5.py` ('degrade=9.0, refuse=11.0') is a documentation",
-        "error; the Python object resolves to 7.5/10.0. This experiment uses both",
-        "default (3.0/6.0) and canonical (7.5/10.0).",
+        "This experiment uses both default (3.0/6.0) and canonical (7.5/10.0).",
         "",
     ]
 
@@ -926,7 +923,7 @@ def _build_report(
     lines += [
         "## §8 Structural Finding: Coherent-Failure Signature Cannot Fire Without Tool Failures",
         "",
-        "`coherence.py:_find_coherent_failure_run` requires ALL of:",
+        "`analysis/coherence.py:_find_synchronized_failure_run` requires ALL of:",
         "  1. `r_t >= 0.75` (high synchrony) — satisfied when tools execute and succeed",
         "  2. `H_t` strictly rising between consecutive steps",
         "  3. `consecutive_failures` strictly rising between consecutive steps",

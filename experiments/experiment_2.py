@@ -757,7 +757,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # RNOS entropy trajectories
     # ------------------------------------------------------------------
-    print("\nRNOS ENTROPY TRAJECTORIES  (degrade>=9.0 / refuse>=11.0)")
+    print("\nRNOS ENTROPY TRAJECTORIES  (degrade>=7.5 / refuse>=10.0)")
     print("(ok) = success  (fail) = failure  (refused) = refused (not executed)\n")
     for r in all_results:
         if r.strategy == "rnos":

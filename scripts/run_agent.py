@@ -19,7 +19,7 @@ from agent.parser import parse_action
 from agent.planner import Planner, PersonaName
 from baselines.adaptive_circuit_breaker import AdaptiveCircuitBreaker
 from baselines.circuit_breaker import CircuitBreaker
-from rnos.coherence import compute_runtime_coherence, format_runtime_coherence_report
+from analysis.coherence import compute_runtime_coherence, format_runtime_coherence_report
 from rnos.hybrid import HybridController
 from rnos.logger import write_trace
 from rnos.policy import PolicyConfig

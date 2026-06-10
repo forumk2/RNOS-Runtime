@@ -733,9 +733,9 @@ def _format_divergence_analysis(
         "    retry_count = 3 (steps 8,9,10 consecutive failures)",
         "    retry_score = 3.0",
         "    failure_score = 1.95 (3 failures in last 5)",
-        "    structural floor = 4.0 (cost_score=2.0 capped + repeated_tool=2)",
+        "    structural floor = ~2.5 (cost_score marginal waste ratio + repeated_tool)",
         "    latency_score = ~0.215 (430ms)",
-        "    entropy = 9.165 > 9.0 threshold => DEGRADE",
+        "    entropy = 9.165 > 7.5 threshold => DEGRADE",
         "  CB at same point:",
         "    window = [S,S,F,F,F] = 3/5 = 0.60",
         "    strict '>' check: 0.60 NOT > 0.60 => ALLOW",
@@ -823,7 +823,7 @@ def _build_markdown_summary_3(
         "### Key Findings",
         "",
         "**bursty_recovery**: Both RNOS and adaptive CB allow through without permanent "
-        "intervention.  RNOS peak entropy stays below the DEGRADE threshold (9.0) at all steps.",
+        "intervention.  RNOS peak entropy stays below the REFUSE threshold (10.0) at all steps.",
         "",
         "**intermittent_cascade**: RNOS first flags at burst 2 end (step 11, DEGRADE) "
         "while the adaptive CB allows through until step 18 (7 steps later) when burst 3 "
@@ -832,19 +832,19 @@ def _build_markdown_summary_3(
         "",
         "**Divergence mechanism**: At step 11 (end of burst 2), RNOS's `retry_score` (3 "
         "consecutive failures = 3.0) combined with `failure_score` (1.95) and the structural "
-        "floor (`cost_score=2.0 + repeated_tool=2.0 = 4.0`) gives entropy 9.165 > 9.0 threshold.  "
+        "floor (cost_score marginal waste ratio + repeated_tool ~2.5) gives entropy 9.165 > 7.5 threshold.  "
         "The adaptive CB sees 3/5=0.60 which does NOT exceed its strict `>` threshold.",
         "",
-        "**Cross-burst memory**: `cost_score = min(cumulative_calls * 0.3, 2.0)` saturates at "
-        "its cap by step 7 and remains at 2.0 through all subsequent recovery windows.  This "
-        "structural floor persists even when retry and failure scores reset on each recovery, "
-        "making each new burst start from a higher entropy baseline than it would in a fresh run.",
+        "**Cross-burst memory**: `cost_score` (marginal waste ratio, cap 2.0) grows with "
+        "cumulative calls and persists through recovery windows.  This structural floor "
+        "persists even when retry and failure scores reset on each recovery, making each new "
+        "burst start from a higher entropy baseline than it would in a fresh run.",
         "",
         "---",
         "",
         "### Design Constraints",
         "",
-        "- Same `PolicyConfig` as Experiment 2 (`degrade_entropy=9.0`, `refuse_entropy=11.0`).",
+        "- Same `PolicyConfig` as Experiment 2 (`degrade_entropy=7.5`, `refuse_entropy=10.0`).",
         "- Same adaptive CB parameters (no retuning).",
         "- Trajectory signals are observational only; they do NOT influence RNOS decisions.",
         "- Explicit deterministic schedules used throughout for full reproducibility.",

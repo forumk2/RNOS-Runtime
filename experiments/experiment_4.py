@@ -5,10 +5,10 @@ instability is diffuse rather than concentrated — no strong consecutive failur
 bursts, but a chronic elevated failure rate that never resolves.
 
 The structural challenge for RNOS: prior experiments (2, 2.5, 3) relied on
-consecutive failure bursts (>=3) to push retry_score high enough to cross the
-DEGRADE threshold. With consecutive failures capped at <=2, retry_score
-contributes at most 2.0. Combined with the structural floor (~4.0), RNOS needs
-~3.0 from failure_score + latency_score alone to reach DEGRADE (9.0). This
+consecutive failure bursts (>=3) to push retry_score high enough to reach
+REFUSE. With consecutive failures capped at <=2, retry_score contributes at
+most 2.0. Combined with the structural floor (~2.5), RNOS can reach DEGRADE
+(7.5) but the ceiling (~8.8) stays below REFUSE (10.0). This
 experiment tests whether those remaining signals are sufficient.
 
 Possible outcomes (all informative):
@@ -263,7 +263,7 @@ def _run_rnos_4(
 def _enrich_trajectory_4(
     entropy_traj: list[dict[str, Any]],
     step_log: list[dict[str, Any]],
-    degrade_threshold: float = 9.0,
+    degrade_threshold: float = 7.5,
 ) -> list[dict[str, Any]]:
     """Add persistence and volatility metrics to each entropy trajectory entry.
 
@@ -689,7 +689,7 @@ def _format_persistence_analysis(
         "",
         "Separation summary:",
         "  above_floor_count shows the clearest early separation:",
-        "    smoldering entropy persists in the (5.0, 9.0) band throughout steps 11-20,",
+        "    smoldering entropy persists in the (5.0, 10.0) band throughout steps 11-20,",
         "    while noisy_recovery's entropy drops to the ~4.0 floor by step 15.",
         "  chronic_instability_flag becomes unambiguous after step 10 on smoldering;",
         "    never activates on noisy_recovery (stability_score reaches 6+ by step 17).",
@@ -749,8 +749,9 @@ def _format_persistence_analysis(
             "  Mechanism: sliding-window failure rate (CB) outperforms cumulative-entropy",
             "  (RNOS) when instability is diffuse and consecutive failure streaks are",
             "  limited to <=2. The FFSFF pattern gives CB window 4/5=0.80 > 0.60,",
-            "  while RNOS sees retry_score=2.0 + failure_score=2.6 + floor=4.0 +",
-            f"  latency~0.2 = ~8.8 -- {gap:.3f} units short of the {policy.degrade_entropy} DEGRADE threshold.",
+            "  while RNOS sees retry_score=2.0 + failure_score=2.6 + floor=~2.5 +",
+            f"  latency~0.2 = ~8.8 -- above DEGRADE ({policy.degrade_entropy}) but "
+            f"  {gap:.3f} units short of REFUSE ({policy.refuse_entropy}).",
         ]
     elif not rnos_detected and not cb_detected:
         lines.append("  Neither RNOS nor CB detected smoldering_instability (Outcome C).")
@@ -870,7 +871,7 @@ def _build_markdown_summary_4(
         "",
         "### Design Constraints",
         "",
-        "- Same `PolicyConfig` as Experiments 2-3 (`degrade_entropy=9.0`, `refuse_entropy=11.0`).",
+        "- Same `PolicyConfig` as Experiments 2-3 (`degrade_entropy=7.5`, `refuse_entropy=10.0`).",
         "- Same adaptive CB parameters (no retuning).",
         "- No more than 2 consecutive failures in either scenario at any point.",
         "- Scenarios share identical failure schedules in steps 1-10 (verified by entropy-band assertion).",

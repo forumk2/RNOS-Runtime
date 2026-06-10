@@ -7,9 +7,10 @@ Three orthogonal detectors are evaluated independently and then combined:
   1. **RNOS entropy**   — detects burst complexity via cumulative instability.
   2. **CB failure_rate** — detects sustained high failure density in a sliding
      window, even when bursts are small (CB strength).
-  3. **Coherence Λ proxy** — detects planner↔executor desynchronisation:
-     tracks a sliding window of per-step λ_t values derived from execution
-     outcome and RNOS allow/block decisions.
+  3. **Success/allow Λ proxy** — sliding-window signal derived from execution
+     outcome (s_et) and RNOS allow/block decisions (s_pg). Collapses when
+     failures accumulate or RNOS blocks. Blind to confident-wrong trajectories
+     where all tools succeed and RNOS allows.
 
 Coupling rules
 --------------
@@ -176,18 +177,16 @@ class HybridController:
     # Coherence proxy
     # ------------------------------------------------------------------
 
-    def _coherence_lambda_proxy(self) -> float:
-        """Simplified Λ proxy over the recent executed-step buffer.
+    def _lambda_success_proxy(self) -> float:
+        """Sliding-window success/allow proxy used by the coupled merge.
 
-        For each step where an outcome was recorded:
-            r_t = (s_pe=1  +  s_pg  +  s_pt=1  +  s_et) / 4
-            h_t = 0.35 × f_t  +  0.25 × b_t
-            λ_t = r_t / (1 + h_t)
+        Assumes s_pe=1 (planner intent) and s_pt=1 (tool result available) for
+        all executed steps — these axes are constant and contribute no signal.
+        Only s_et (tool success) and s_pg (RNOS allowed) vary per step.
 
-        s_pe=1 (planner intent is assumed for all executed steps),
-        s_pt=1 (tool produced a result when executed),
-        s_et = 1 if success, 0 otherwise,
-        s_pg = 1 if RNOS allowed, 0 if RNOS blocked.
+        A run where every tool succeeds and RNOS allows yields λ=1.0 throughout.
+        This proxy is blind to confident-wrong trajectories; it only detects
+        failure accumulation (s_et dropping) or RNOS blocking (s_pg dropping).
 
         Returns the mean λ_t over the window.  Falls back to 1.0 (healthy)
         when fewer than 2 recorded outcomes are available.
@@ -223,7 +222,7 @@ class HybridController:
         rnos_sev = _SEVERITY.get(rnos_str, 0)
         cb_sev = _SEVERITY.get(cb_reason, 0)
         cb_failure_rate = float(cb_stats.get("failure_rate", 0.0))
-        lambda_proxy = round(self._coherence_lambda_proxy(), 3)
+        lambda_proxy = round(self._lambda_success_proxy(), 3)
         rnos_entropy = assessment.entropy
 
         # --- Coherence regime (0=resonant, 1=critical, 2=collapse) -----------

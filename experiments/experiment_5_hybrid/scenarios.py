@@ -21,8 +21,8 @@ Scenario B — distributed_low_rate (CB strength)
 ------------------------------------------------
 Failures are distributed evenly in a repeating F-F-S pattern (67% failure
 rate, ≤2 consecutive failures). This pattern keeps RNOS's retry_score low
-(max 2.0) and failure_score below the DEGRADE threshold under EXP2_POLICY
-(degrade_entropy=9.0). The AdaptiveCircuitBreaker trips when its sliding
+(max 2.0). Entropy peaks above DEGRADE (7.5) but stays below REFUSE (10.0)
+under EXP2_POLICY. The AdaptiveCircuitBreaker trips when its sliding
 window fills with ≥7/10 failures.
 
 Failure pattern (30 steps):
@@ -60,7 +60,7 @@ def make_cascading_burst(seed: int = 42) -> ConfigurableAPI:
     ----------------
     * RNOS's retry_score accumulates linearly with consecutive failures
       (1.0/failure, capped at 4.0). By step 9 (7 consecutive), retry_score=4.0
-      and failure_score=3.0 (capped). With EXP2_POLICY (degrade=9.0),
+      and failure_score=3.0 (capped). With EXP2_POLICY (degrade=7.5, refuse=10.0),
       RNOS degrades at step ~8 (entropy ~10.8) and refuses at step ~9.
     * AdaptiveCircuitBreaker (window_size=10, threshold=0.6) requires 10
       executions before evaluating the window. After 10 execs the window
@@ -115,9 +115,9 @@ def make_distributed_low_rate(seed: int = 42) -> ConfigurableAPI:
       → AdaptiveCircuitBreaker trips after 10 executions (at step 11).
     * Consecutive failure runs: max 2 → RNOS retry_score ≤ 2.0.
     * failure_score (last 5): ~3 failures → 3*0.65 = 1.95, never 3.0.
-    * entropy peak (with EXP2_POLICY, cost/repeated_tool floor of ~4.0):
-        ~0 + 2.0 + 1.95 + 2.0 + 0.10 + 2.0 = 8.05 → below DEGRADE (9.0).
-    * RNOS stays ALLOW throughout; hybrid catches via CB at step 11.
+    * entropy peak (with EXP2_POLICY, floor ~2.5): peaks ~8.05–8.7 —
+        above DEGRADE (7.5) but below REFUSE (10.0). RNOS degrades but
+        does not terminate; hybrid catches via CB at step 11.
 
     Latency: 200 ms on failure, 80 ms on success — no runaway spike that
     would elevate RNOS's latency_score above 0.10 per step.

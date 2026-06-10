@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rnos.coherence import compute_runtime_coherence, format_runtime_coherence_report
+from analysis.coherence import compute_runtime_coherence, format_runtime_coherence_report
 
 DEFAULT_TRACE_PATH = Path(__file__).resolve().parents[1] / "logs" / "rnos_trace.jsonl"
 

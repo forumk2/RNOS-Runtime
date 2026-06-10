@@ -22,9 +22,7 @@ For a zero-failure accumulator run with alternating tool names (step_toward / ad
 With single repeated tool name: repeated_tool=2, floor=**2.510** — still below 3.0.
 
 **Canonical threshold set:** `EXP2_POLICY` in `experiments/experiment_2.py` is
-`degrade_entropy=7.5, refuse_entropy=10.0`.
-The comment in `run_experiment_5.py` ('degrade=9.0, refuse=11.0') is a documentation
-error; the Python object resolves to 7.5/10.0. This experiment uses both
+`degrade_entropy=7.5, refuse_entropy=10.0`. This experiment uses both
 default (3.0/6.0) and canonical (7.5/10.0).
 
 ## §7 Results Table

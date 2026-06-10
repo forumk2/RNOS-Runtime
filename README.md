@@ -183,16 +183,17 @@ Neither controller alone is sufficient. Hybrid is not redundancy — it is requi
 
 RNOS evaluates two signals before each action:
 
-**Entropy** — a composite instability score. Six weighted components accumulate across the run:
+**Entropy** — a composite instability score. Seven weighted components accumulate across the run:
 
 | Component | Captures |
 |---|---|
 | `retry_score` | Consecutive failures |
 | `failure_score` | Failure rate over the last 5 actions |
-| `cost_score` | Total executed steps (cumulative, does not reset on success) |
+| `cost_score` | Marginal spend-per-success: base per-call cost (cap 0.5) plus calls-per-successful-output ratio (cap 1.5). Penalises execution that produces little output relative to calls made. Cap 2.0. |
 | `repeated_tool` | Same tool called repeatedly |
 | `latency_score` | Planner inference time as a stress signal |
 | `depth_score` | Execution depth in the call chain |
+| `long_memory_score` | EWMA (α=0.10) over the full run history, scaled to [0, 2.0]. Detects distributed low-rate failure that the 5-step `failure_score` window misses. Ablation: α=0.10 fires at step 11 on F-F-S×10 (equilibrium 1.21); α=0.30 fires at step 2 but settles lower (1.09). |
 
 **Trust** — a confidence score (0.0–1.0) based on recent success rate, penalized by entropy.
 
@@ -206,7 +207,7 @@ These combine into three decisions:
 
 > **Note on thresholds:**
 > The thresholds shown here are illustrative defaults for explaining the RNOS decision model.
-> The RNOS-Runtime experimental suite (including discrimination and hybrid control experiments) uses calibrated thresholds (DEGRADE = 9.0, REFUSE = 11.0) to better separate decision regimes under controlled scenarios, accounting for a structural entropy floor of ~4.0 produced by repeated tool use and cumulative cost.
+> The RNOS-Runtime experimental suite (including discrimination and hybrid control experiments) uses calibrated thresholds (DEGRADE = 7.5, REFUSE = 10.0) tuned for EXP2_POLICY after the June 2026 cost_score refactor. The old structural floor (~4.0 from repeated_tool + saturated cost_score) is now ~2.0–2.5 under the marginal waste-ratio formula; thresholds were lowered proportionally.
 >
 > These differences reflect **experimental calibration**, not a change in the underlying policy structure.
 
@@ -216,7 +217,7 @@ REFUSE terminates the entire agent loop, not just the current tool call. This me
 
 ## Key Design Properties
 
-**Cumulative state.** `cost_score` reaches its cap at 7 steps and does not reset when the agent succeeds. This creates a structural entropy floor that grows with run length, independently of recent failure rate. A 3-failure burst in a fresh run looks different to RNOS than the same burst at step 11 of a long run.
+**Cumulative state.** `cost_score` (marginal waste ratio) and `long_memory_score` (EWMA α=0.10) both accumulate across the full run without resetting on success. This creates a structural floor that grows with run length, independently of recent failure rate. A 3-failure burst in a fresh run looks different to RNOS than the same burst at step 11 of a long run.
 
 **Reactive, not predictive.** RNOS does not infer future trajectory. It responds to observable signal in the execution trace. When two scenarios are entropy-matched, RNOS withholds judgment — this is correct behavior, not a limitation.
 
@@ -228,7 +229,7 @@ REFUSE terminates the entire agent loop, not just the current tool call. This me
 
 Four experiments test RNOS across progressively harder discrimination tasks. Each runs RNOS, an adaptive circuit breaker (CB), and an unprotected baseline against the same scenarios. The goal is to characterize where entropy-based control works, where it fails, and what the failure boundary looks like mechanically.
 
-- **RNOS** — entropy-based policy with fixed thresholds (degrade at 9.0, refuse at 11.0)
+- **RNOS** — entropy-based policy with fixed thresholds (degrade at 7.5, refuse at 10.0)
 - **Adaptive CB** — sliding-window failure-rate breaker with exponential backoff and adaptive threshold
 - **Baseline** — unprotected execution
 
@@ -315,19 +316,19 @@ This experiment defines RNOS's structural boundary.
 - `smoldering_instability` max entropy (steps 3–10): 7.11
 - diff: 0.0
 
-**RNOS result.** No intervention on `smoldering_instability`. Peak entropy: 8.805. DEGRADE threshold: 9.0. Miss gap: 0.195 units.
+**RNOS result.** RNOS degrades but does not refuse on `smoldering_instability`. Peak entropy: 8.805. DEGRADE threshold: 7.5 (reached). REFUSE threshold: 10.0 (not reached). Refuse gap: 1.195 units.
 
-This is not a calibration issue — it is structural. Under a ≤2 consecutive failure constraint, the entropy ceiling is bounded:
+This is structural. Under a ≤2 consecutive failure constraint, the entropy ceiling is bounded below the REFUSE threshold:
 
 | Component | Max value | Reason |
 |---|---|---|
 | retry_score | 2.0 | consecutive failures capped at 2 |
 | failure_score | 2.6 | at most 4/5 recent failures |
-| structural floor | 4.0 | cost_score + repeated_tool |
+| structural floor | ~2.5 | cost_score (marginal waste ratio) + repeated_tool |
 | latency_score | ~0.2 | 410 ms latency |
 | **Ceiling** | **~8.8** | |
 
-RNOS cannot reach the 9.0 DEGRADE threshold when consecutive failures are capped at 2, regardless of how long the instability persists. Lowering the threshold to close the gap would cause false positives on `noisy_recovery`, which reaches 7.11 during its noisy phase. The tradeoff cannot be resolved within the current entropy composition.
+RNOS fires DEGRADE (~8.8 > 7.5) but never fires REFUSE (~8.8 < 10.0) when consecutive failures are capped at 2, regardless of how long the instability persists. The run continues to completion under degraded mode. Only REFUSE terminates execution, so RNOS does not prevent the task from completing.
 
 **CB result.** Detects `smoldering_instability` at step 18. The FFSFF pattern in steps 13–17 fills the window with 4/5 = 0.80, exceeding the 0.60 threshold. The CB accumulates failure density regardless of consecutiveness — the structural property RNOS's retry-based scoring cannot replicate.
 
@@ -357,7 +358,7 @@ Two scenarios target each sub-system's known strength:
 
 **Scenario A — `cascading_burst`** (RNOS strength): 7 consecutive failures beginning at step 3, absorbing thereafter. RNOS's `retry_score` accumulates 1.0 per consecutive failure, crossing the DEGRADE threshold before the CB's 10-step window fills.
 
-**Scenario B — `distributed_low_rate`** (CB strength): repeating F-F-S pattern (67% failure rate, ≤2 consecutive). `retry_count` resets every third step, capping `retry_score` at 2.0. RNOS entropy peaks at 8.7 — 0.3 below DEGRADE (9.0). The CB's window fills with 7/10 failures after 10 executions and trips.
+**Scenario B — `distributed_low_rate`** (CB strength): repeating F-F-S pattern (67% failure rate, ≤2 consecutive). `retry_count` resets every third step, capping `retry_score` at 2.0. RNOS entropy peaks at 8.7 — above DEGRADE (7.5) but 1.3 below REFUSE (10.0). RNOS degrades but does not terminate. The CB's window fills with 7/10 failures after 10 executions and trips.
 
 Results (tool executions before termination):
 
@@ -376,8 +377,8 @@ Results (tool executions before termination):
 
 - RNOS and CB have complementary detection profiles. Framing them as competitors misrepresents the results.
 - RNOS detects structured cascading failure earlier: 7-step advantage on `intermittent_cascade`, explained by cumulative entropy preserving cross-burst state that CB's sliding window discards.
-- CB detects distributed failure density better: catches `smoldering_instability` at step 18; RNOS does not catch it at any step.
-- RNOS has a structural blind spot when consecutive failure streaks are capped at ≤2. The retry-based entropy component cannot rise high enough to trigger DEGRADE under that constraint, regardless of sustained failure rate.
+- CB refuses `smoldering_instability` at step 18; RNOS degrades on it but never refuses, so the run completes. Only REFUSE terminates execution.
+- RNOS has a structural blind spot when consecutive failure streaks are capped at ≤2. The retry-based entropy component can reach DEGRADE (~8.8 > 7.5) but not REFUSE (~8.8 < 10.0) under that constraint, regardless of sustained failure rate.
 - **Hybrid composition (Experiment 5) resolves the complementarity directly.** A safety-first merge of RNOS + CB matches or beats both sub-systems on every tested failure geometry. The `trigger_source` field makes the contributing sub-system observable per-step.
 - The persistence signals logged in Experiment 4 clearly separate the scenarios RNOS cannot distinguish. These are observational only and are not currently modeled in the entropy formula.
 
@@ -387,7 +388,7 @@ Results (tool executions before termination):
 
 **RNOS is not predictive.** Detection requires observable divergence in the execution trace. Experiment 2.5 confirms this directly: when two scenarios are entropy-matched, RNOS withholds judgment and correctly does nothing.
 
-**Structural entropy ceiling.** When consecutive failures are capped at ≤2, the maximum reachable entropy (~8.8) falls below the DEGRADE threshold (9.0). RNOS cannot detect diffuse, non-consecutive instability regardless of threshold adjustment without introducing false positives on recoverable scenarios.
+**Structural entropy ceiling.** When consecutive failures are capped at ≤2, the maximum reachable entropy (~8.8) falls below the REFUSE threshold (10.0). RNOS reaches DEGRADE (~8.8 > 7.5) but cannot fire REFUSE regardless of how long the diffuse instability persists. The run degrades but is not terminated.
 
 **No persistence modeling.** RNOS does not model sustained failure rate, stability streaks, or time-above-floor. Experiment 4 shows these signals are sufficient to discriminate the scenarios RNOS misses. They are not currently part of the entropy composition.
 
@@ -396,6 +397,22 @@ Results (tool executions before termination):
 **Entropy weights are hand-tuned.** Component coefficients and caps were set by design, not optimization. Different weight assignments produce different detection boundaries.
 
 **CB is a strong baseline, not a strawman.** The adaptive circuit breaker matches RNOS selectivity on three of four experiments and outperforms it on the fourth. These results characterize two complementary detection profiles; they do not establish RNOS superiority.
+
+**Coherent-failure detection is not provided.** RNOS, the circuit breaker, and the coherence proxy are all turbulence/failure detectors. A run where every tool call succeeds but the agent pursues the wrong goal is execution-trace invisible. Experiment 6 confirmed 0% detection rate across 320 runs (N=20 seeds × 2 variants × 2 threshold sets × 4 modes). The entropy floor for a zero-failure alternating-tool run is 0.510 — well below the default DEGRADE threshold of 3.0. A progress oracle or output-distribution view (see `experiments/cevak_rnos_probe/`) would be required for this class of failure.
+
+---
+
+## Audit Findings
+
+A blind ablation audit (May 2026) tested the primary claim that RNOS outperforms a tuned circuit breaker on principal adversarial scenarios. **The claim fails under tuning parity.**
+
+A 36-config grid search found that a tuned CB (window=3, threshold=0.40, cooldown=3) reduces cascade damage by 86% vs baseline. Full RNOS with showcase thresholds achieves 59%. Tuned RNOS (4.5/7.0) achieves 78% — still 69.7% worse than tuned CB, consistent across all 8 seeds tested.
+
+**What holds:** RNOS's three-state ALLOW/DEGRADE/REFUSE structure provides a genuine 42% advantage over CB in out-of-distribution rapid-escalation scenarios where the CB's binary open/closed response is too coarse. The DEGRADE state is the load-bearing mechanism, not the entropy formula.
+
+**What does not hold:** The claim that entropy-based scoring outperforms a well-tuned circuit breaker on the primary adversarial scenarios tested here. The experiments in this repository used an untuned CB as the baseline; that framing understated CB's ceiling.
+
+Full audit findings and methodology: [`audit/VERDICT.md`](audit/VERDICT.md)
 
 ---
 
@@ -523,12 +540,17 @@ RNOS sits between the planner and execution. It does not replace the planner —
 
 ```
 rnos/
-  entropy.py           # Entropy calculation (6 weighted components)
+  entropy.py           # Entropy calculation (7 weighted components)
   trust.py             # Trust model (success-rate baseline minus entropy penalty)
   policy.py            # ALLOW / DEGRADE / REFUSE policy engine
   runtime.py           # Main evaluation loop
-  hybrid.py            # HybridController (RNOS + CB, safety-first merge)
+  hybrid.py            # HybridController (RNOS + CB, coupled 3-detector merge)
   types.py             # Shared data structures
+
+analysis/
+  coherence.py         # Offline trace analysis only — NOT wired into runtime.py.
+                       # compute_runtime_coherence() and _find_synchronized_failure_run()
+                       # are post-hoc tools; they have zero effect on RNOS decisions.
 
 baselines/
   circuit_breaker.py          # Exponential-backoff circuit breaker

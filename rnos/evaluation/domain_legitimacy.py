@@ -36,7 +36,7 @@ EXAMPLE_SCENARIOS: dict[str, dict[str, Any]] = {
             ],
             "benchmarks": ["intermittent_cascade", "smoldering_instability"],
             "baseline": "adaptive circuit breaker",
-            "thresholds": {"degrade": 9.0, "refuse": 11.0},
+            "thresholds": {"degrade": 7.5, "refuse": 10.0},
             "evidence": (
                 "Synthetic deterministic experiments show earlier detection on bursty "
                 "cascades and misses on distributed low-rate failure."

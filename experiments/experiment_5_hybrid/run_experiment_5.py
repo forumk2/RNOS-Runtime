@@ -84,7 +84,7 @@ _ACB_COOLDOWN = 3
 # Policy tuned for ConfigurableAPI experiments (same as Exp 2/3/4).
 # Default thresholds (3.0/6.0) would produce false DEGRADE on every run
 # because repeated_tool=2.0 + cost_score=2.0 creates a ~4.0 structural floor.
-_POLICY = EXP2_POLICY   # degrade=9.0, refuse=11.0, trust gates disabled
+_POLICY = EXP2_POLICY   # degrade=7.5, refuse=10.0, trust gates disabled
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +554,7 @@ def _build_report(
         f"**Seed:** {seed}  **Max steps:** {max_steps}  "
         f"**CB:** AdaptiveCircuitBreaker(window={_ACB_WINDOW}, "
         f"threshold={_ACB_THRESHOLD})  "
-        f"**Policy:** EXP2_POLICY (degrade=9.0, refuse=11.0)",
+        f"**Policy:** EXP2_POLICY (degrade=7.5, refuse=10.0)",
         "",
         "## Results Table",
         "",
@@ -628,7 +628,7 @@ def _build_report(
                 "RNOS detects this scenario via **retry_score** accumulation: each "
                 "consecutive failure increments retry_count (weight 1.0/step, cap 4.0). "
                 "Combined with failure_score and the repeated_tool/cost floor, entropy "
-                "crosses the DEGRADE threshold (9.0) before the CB's 10-step window fills."
+                "crosses the DEGRADE threshold (7.5) before the CB's 10-step window fills."
             )
             if r and c:
                 report_lines.append(
@@ -643,9 +643,10 @@ def _build_report(
             report_lines.append(
                 "CB detects this scenario via its **sliding window failure rate**: "
                 "the F-F-S pattern produces 7/10 = 0.70 failures in any full 10-step "
-                "window, exceeding the 0.60 threshold. RNOS's entropy stays below 9.0 "
-                "because retry_count resets every third step (on the S step), keeping "
-                "retry_score ≤ 2.0, and failure_score peaks at ~1.95 (3/5 recent)."
+                "window, exceeding the 0.60 threshold. RNOS's entropy peaks above DEGRADE "
+                "(7.5) but stays below REFUSE (10.0) because retry_count resets every third "
+                "step (on the S step), keeping retry_score <= 2.0, and failure_score peaks "
+                "at ~1.95 (3/5 recent). RNOS degrades but never terminates the run."
             )
             if r and c:
                 report_lines.append(
@@ -667,11 +668,10 @@ def _build_report(
     )
     report_lines.append("")
     report_lines.append(
-        "- **Policy dependency.** Results use EXP2_POLICY (degrade=9.0, refuse=11.0) "
-        "which is calibrated for the ConfigurableAPI structural floor "
-        "(repeated_tool=2.0 + cost_score=2.0 ≈ 4.0 base entropy). A lower RNOS "
-        "threshold would cause RNOS to flag the distributed scenario via the entropy "
-        "floor alone, obscuring the CB's comparative advantage."
+        "- **Policy dependency.** Results use EXP2_POLICY (degrade=7.5, refuse=10.0). "
+        "The REFUSE threshold (10.0) is calibrated above the smoldering entropy ceiling "
+        "(~8.8) so that RNOS degrades but does not terminate on distributed failure, "
+        "preserving the CB's termination advantage on that geometry."
     )
     report_lines.append("")
     report_lines.append(
